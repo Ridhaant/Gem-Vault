@@ -1,0 +1,49 @@
+=====================================================================
+💎 SHREEJI GEMS — USB PENDRIVE TRANSFER & PORTABLE SETUP GUIDE
+=====================================================================
+
+HOW TO TRANSFER AND RUN SHREEJI GEMS ON ANY WINDOWS COMPUTER:
+---------------------------------------------------------------------
+
+STEP 1: COPY TO PENDRIVE
+- Copy this entire folder ("work-main" or "gemstones") onto your USB pendrive.
+
+STEP 2: RUN ON TARGET PC
+- Plug the pendrive into any Windows laptop or computer (no internet required).
+- You can run it directly from the pendrive or copy the folder onto the computer's C:\ drive or Desktop.
+
+STEP 3: CREATE DESKTOP SHORTCUT (WITH LOGO ICON)
+- Inside the folder, double-click:
+    Create_Desktop_Shortcut.bat
+- This instantly places a shiny emerald gemstone shortcut named:
+    "Shreeji Gems - Gemstones CRM"
+  right on your Windows Desktop!
+
+STEP 4: START THE SOFTWARE
+- Double-click the desktop shortcut or "Launch_GemVault.bat".
+- Shreeji Gems opens immediately in an app window.
+
+HOW DATA & BACKUPS WORK (100% OFFLINE & SAFE):
+---------------------------------------------------------------------
+1. All changes, new packets, sales, payments, and buyer records are stored 100% locally on your computer.
+2. AUTOMATIC WEEKLY BACKUPS:
+   - Shreeji Gems automatically creates a weekly backup snapshot every 7 days.
+3. MANUAL BACKUPS:
+   - Click "💾 Backup Now" at the top of the screen anytime to download a fresh .json snapshot file.
+4. EXECUTIVE BUSINESS REPORT:
+   - Click "📊 Business Report" at the top of the screen anytime to preview and print a full valuation, profit & loss, and packet inventory report.
+5. RESTORE BACKUP:
+   - Click "🔄 Restore" at the top of the screen to load any past backup file.
+
+HOW QR CODES & BARCODE SCANNERS WORK:
+---------------------------------------------------------------------
+1. PHONE CAMERA SCANNING:
+   - Phone Document Mode: Scanning the packet QR code with your phone camera shows the complete gemstone certificate with packet number, gemstone variety, shape, weight, pieces, MM size, purchase cost, asking rate, lab certificate, and any itemized mixed stones in that box.
+   - Offline Web Link Mode: If your phone is connected to the same Wi-Fi router or hotspot, scanning the QR code shows a link to open the live interactive dossier page directly on your phone!
+2. PHYSICAL BARCODE / QR SCANNER GUN:
+   - Plug any USB or wireless handheld barcode scanner into the PC.
+   - When you scan any packet QR tag or barcode, Shreeji Gems automatically detects the scan and immediately pops open that packet's complete dossier on the computer screen with all stone and parcel details!
+
+=====================================================================
+CONFIDENTIAL & AIR-GAPPED — SHREEJI GEMS GEMSTONES MASTER CRM
+=====================================================================

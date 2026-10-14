@@ -1,5 +1,5 @@
 /**
- * Soneja CRM - Inventory Stock PDF Exporter
+ * Shreeji Gems CRM - Inventory Stock PDF Exporter
  * Generates and triggers a print/PDF view containing ONLY:
  * - Model Name
  * - In Stock Quantity

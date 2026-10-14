@@ -1,4 +1,4 @@
-// Soneja Electronics - IndexedDB & Client-side Storage for Invoice Attachments
+// Shreeji Gems CRM - IndexedDB & Client-side Storage for Invoice Attachments
 export interface InvoiceAttachment {
   name: string;
   type: string;
@@ -7,7 +7,7 @@ export interface InvoiceAttachment {
   uploaded_at: string;
 }
 
-const DB_NAME = "soneja_invoices_db";
+const DB_NAME = "gemvault_invoices_db";
 const DB_VERSION = 1;
 const STORE_NAME = "invoices";
 

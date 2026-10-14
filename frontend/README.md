@@ -1,15 +1,15 @@
-# Soneja Electronics CRM — Web Frontend
+# GEMVAULT — Gemstones CRM & Packet Inventory Master
 
-Modern React 19 + TypeScript + Vite web client for the Soneja Electronics Distribution CRM.
+Modern React 19 + TypeScript + Vite web client for the GEMVAULT Gemstones CRM & Packet Inventory Master.
 
 ## Features
-- **Responsive Navigation**: Desktop sidebar with grouped navigation and mobile responsive topbar / bottom nav.
-- **Dark & Light Mode Design System**: Rich modern aesthetics with custom HSL tokens, glassmorphic cards, and micro-animations.
-- **Sales & Purchases Workflow**: Line item billing, dealer auto-complete, printable invoices, and balance tracking.
-- **Inventory & Cost Sheet**: Real-time stock levels, margin calculations, and low-stock alerts.
-- **Dealer Book**: WhatsApp direct messaging (`wa.me`) and direct phone dialing (`tel:`).
-- **Financial Analytics**: P&L waterfall breakdown, monthly sales vs. purchases comparison bars, and aging receivables.
-- **Staff Administration**: Owner-guarded team management and account control.
+- **Strict Packet Data Structure**: High-precision packets (`ex/1`, `ex/2`), variety, shape, carat weight, pieces, mm dimensions, purchase price + date, asking price, buyer name + date.
+- **ISO/IEC 18004 QR Generation**: Instant packet label printing, pouch tag QR codes, and camera scanner lookup.
+- **Vault Inventory & Procurement**: Intake rough/cut packets, real-time stock levels, and memo allocations.
+- **Sales & Gemstone Invoicing**: Allocation from vault, buyer tracking, margin calculations, and luxury tax invoice export.
+- **Brokerage Deals**: Track 3rd-party transactions not in vault inventory with commission splits.
+- **Business Evaluation & Analytics**: P&L analysis, COGS, gross margins, brokerage income, operating expenses, and vault valuation.
+- **100% Local Air-Gapped Operation**: Zero cloud transmission, SQLite offline backend, and JSON backups.
 
 ## Development
 

@@ -35,22 +35,22 @@ export interface BillData {
 }
 
 export const COMPANY_DETAILS = {
-  name: "SONEJA ELECTRONIC",
-  addressLine1: "GROUND FLOOR 17A SHOP NO S-16",
-  addressLine2: "HAJI KASAM CHAWL, V A PATEL MRG",
-  addressLine3: "GRANT ROAD EAST, MUMBAI, MAHARASHTRA 400007",
-  address: "GROUND FLOOR 17A SHOP NO S-16, HAJI KASAM CHAWL, V A PATEL MRG, GRANT ROAD EAST, MUMBAI, MAHARASHTRA 400007",
-  gstin: "27AMZPS1148H1ZH",
+  name: "SHREEJI GEMS",
+  addressLine1: "SUITE 14, BOURSE TOWER",
+  addressLine2: "OPAL & EMERALD ROW, BHARAT DIAMOND BOURSE",
+  addressLine3: "BKC, BANDRA EAST, MUMBAI, MAHARASHTRA 400051",
+  address: "SUITE 14, BOURSE TOWER, OPAL & EMERALD ROW, BHARAT DIAMOND BOURSE, BKC, BANDRA EAST, MUMBAI 400051",
+  gstin: "27AAACG1148H1Z8",
   stateName: "Maharashtra",
   stateCode: "27",
-  contact: "9820340382, 9820842483",
-  email: "msoneja@yahoo.co.in, girishsoneja@ymail.com",
-  pan: "AMZPS1145H",
-  bankName: "SVCCO-OPERATIVE BANK LTD",
-  accountNo: "100604180006444",
-  bankAccount: "100604180006444",
-  ifsc: "SHAMRAO VITHAL MARG & SVCB0000006",
-  bankIfsc: "SHAMRAO VITHAL MARG & SVCB0000006",
+  contact: "+91 98200 12345, +91 98200 67890",
+  email: "contact@shreejigems.com",
+  pan: "AACCG1145H",
+  bankName: "HDFC BANK LTD — BULLION & DIAMOND BRANCH",
+  accountNo: "50200084930219",
+  bankAccount: "50200084930219",
+  ifsc: "HDFC0000060",
+  bankIfsc: "HDFC0000060",
 };
 
 /**
@@ -63,8 +63,8 @@ export function generateWhatsAppBillText(bill: BillData): string {
 
   const itemsText = bill.items
     .map((it, idx) => {
-      const hsn = it.hsn || "85287219";
-      return `${idx + 1}. *${it.model}*\n   HSN: ${hsn} | Qty: ${it.qty} Nos x ${formatINR(it.rate)} = *${formatINR(it.amount)}*`;
+      const hsn = it.hsn || (it.model?.toLowerCase().includes("diamond") ? "7102" : "7103");
+      return `${idx + 1}. *${it.model}*\n   HSN: ${hsn} | Qty: ${it.qty} cts/pcs x ${formatINR(it.rate)} = *${formatINR(it.amount)}*`;
     })
     .join("\n");
 
@@ -74,8 +74,8 @@ export function generateWhatsAppBillText(bill: BillData): string {
       : `🔴 *Balance Due: ${formatINR(bill.balance)}*`;
 
   return [
-    "📺 *SONEJA ELECTRONIC*",
-    "Distribution & Wholesale | Mumbai",
+    "💎 *SHREEJI GEMS*",
+    "Distribution & Wholesale Vault | Mumbai",
     `GSTIN: ${COMPANY_DETAILS.gstin} · Code: ${COMPANY_DETAILS.stateCode}`,
     `📞 ${COMPANY_DETAILS.contact}`,
     "══════════════════════════",
@@ -88,7 +88,7 @@ export function generateWhatsAppBillText(bill: BillData): string {
     bill.customerAddress ? `📍 ${bill.customerAddress}` : null,
     bill.customerPhone ? `📱 Phone: ${bill.customerPhone}` : null,
     "──────────────────────────",
-    "*DESCRIPTION OF GOODS (LED TVs):*",
+    "*DESCRIPTION OF GOODS (GEMSTONES):*",
     itemsText || "No items",
     "──────────────────────────",
     `💰 *Grand Total (Incl. GST):* *${formatINR(bill.total)}*`,
@@ -102,7 +102,7 @@ export function generateWhatsAppBillText(bill: BillData): string {
     `IFSC: ${COMPANY_DETAILS.ifsc}`,
     "══════════════════════════",
     "🙏 *Thank you for your business!*",
-    "📍 Soneja Electronic, Grant Road East, Mumbai",
+    "📍 Shreeji Gems, BKC, Mumbai",
   ]
     .filter(Boolean)
     .join("\n");
@@ -158,10 +158,11 @@ export function renderTaxInvoiceHtml(bill: BillData): string {
   const buyerState = bill.customerState || "Maharashtra";
   const buyerCode = bill.customerStateCode || "27";
 
-  // Reverse tax calculation for GST (18% standard for Televisions: 9% CGST + 9% SGST)
+  // Standard Gemstone Tax calculation (0.25% standard for precious stones: 0.125% CGST + 0.125% SGST)
   // Total in system is GST-inclusive.
   const grandTotal = bill.total || 0;
-  const taxableSubtotal = Math.round((grandTotal / 1.18) * 100) / 100;
+  const gstRate = 0.25;
+  const taxableSubtotal = Math.round((grandTotal / (1 + gstRate / 100)) * 100) / 100;
   const totalTax = Math.round((grandTotal - taxableSubtotal) * 100) / 100;
   const cgstAmount = Math.round((totalTax / 2) * 100) / 100;
   const sgstAmount = Math.round((totalTax - cgstAmount) * 100) / 100;
@@ -171,20 +172,20 @@ export function renderTaxInvoiceHtml(bill: BillData): string {
   const itemRowsHtml = bill.items
     .map((it) => {
       const itAmount = Number(it.amount) || (Number(it.qty) * Number(it.rate));
-      const itTaxable = Math.round((itAmount / 1.18) * 100) / 100;
+      const itTaxable = Math.round((itAmount / (1 + gstRate / 100)) * 100) / 100;
       const itRateExcl = it.qty > 0 ? Math.round((itTaxable / it.qty) * 100) / 100 : 0;
-      const hsn = it.hsn || "85287219";
+      const hsn = it.hsn || (it.model?.toLowerCase().includes("diamond") ? "7102" : "7103");
 
       return `
         <tr>
           <td style="padding: 6px 8px; vertical-align: top; border-right: 1px solid #000;">
             <div style="font-weight: bold; font-size: 11.5px;">${it.model}</div>
-            <div style="font-style: italic; font-size: 10px; color: #222; margin-top: 2px;">${it.description || "WORLDTECH 2 YEARS WARRANTY"}</div>
+            <div style="font-style: italic; font-size: 10px; color: #222; margin-top: 2px;">${it.description || "Natural Certified Gemstone"}</div>
           </td>
           <td style="padding: 6px 8px; text-align: center; vertical-align: top; border-right: 1px solid #000;">${hsn}</td>
-          <td style="padding: 6px 8px; text-align: right; vertical-align: top; border-right: 1px solid #000; font-weight: bold;">${it.qty} Nos</td>
+          <td style="padding: 6px 8px; text-align: right; vertical-align: top; border-right: 1px solid #000; font-weight: bold;">${it.qty}</td>
           <td style="padding: 6px 8px; text-align: right; vertical-align: top; border-right: 1px solid #000;">${itRateExcl.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-          <td style="padding: 6px 8px; text-align: center; vertical-align: top; border-right: 1px solid #000;">Nos</td>
+          <td style="padding: 6px 8px; text-align: center; vertical-align: top; border-right: 1px solid #000;">cts</td>
           <td style="padding: 6px 8px; text-align: right; vertical-align: top; font-weight: bold;">${itTaxable.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
         </tr>
       `;
@@ -492,11 +493,11 @@ export function renderTaxInvoiceHtml(bill: BillData): string {
         </thead>
         <tbody>
           <tr>
-            <td class="bold">85287219</td>
+            <td class="bold">${bill.items[0]?.hsn || "7103"}</td>
             <td class="text-right">${taxableSubtotal.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-            <td class="text-center">9%</td>
+            <td class="text-center">0.125%</td>
             <td class="text-right">${cgstAmount.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-            <td class="text-center">9%</td>
+            <td class="text-center">0.125%</td>
             <td class="text-right">${sgstAmount.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
             <td class="text-right bold">${totalTax.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
           </tr>

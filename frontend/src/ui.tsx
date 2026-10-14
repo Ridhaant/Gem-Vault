@@ -22,13 +22,14 @@ export function Initials({ name, size = 36 }: { name: string; size?: number }) {
   );
 }
 
-export function EmptyState({ icon = "📦", title, subtitle, action, onAction }:
-  { icon?: string; title: string; subtitle?: string; action?: string; onAction?: () => void }) {
+export function EmptyState({ icon = "📦", title, subtitle, description, action, onAction }:
+  { icon?: string; title: string; subtitle?: string; description?: string; action?: string; onAction?: () => void }) {
+  const sub = subtitle || description;
   return (
     <div className="empty-state">
       <div className="empty-icon">{icon}</div>
       <h3>{title}</h3>
-      {subtitle && <p>{subtitle}</p>}
+      {sub && <p>{sub}</p>}
       {action && onAction && (
         <button className="btn btn-primary btn-sm" onClick={onAction}>{action}</button>
       )}

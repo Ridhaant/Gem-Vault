@@ -1,48 +1,71 @@
-# Soneja Electronics — Distribution CRM (PRD)
+# Shreeji Gems — Gemstones CRM, Packet Inventory & Trading Vault (PRD)
 
-## Original Problem Statement
-Build a CRM for Soneja Electronics, a distributor of home appliances (Worldtech TVs). Needs trackers for daily expenses, purchase orders (auto-updating inventory), sales orders, live inventory by SKU/model with quantities, editable SKU/model/costing cost sheet, dealer network directory, a home dashboard with total sales, a summarized report (sales/purchases/inventory/net profit) updated on every change, and receivables/payables tracking with aging (invoice vs payment received; supplier side too).
+## Product Overview
+Shreeji Gems CRM is an offline-first, privacy-focused ERP/CRM system purpose-built for gemstone merchants, high-jewelry dealers, and brokers operating across the Bharat Diamond Bourse (BDB), Zaveri Bazaar (Mumbai), Jaipur, Bangkok, and international gem bourses.
 
-## User Choices
-- Multi-user: owner + staff, JWT email/password login.
-- Prices are GST-inclusive.
-- Sales orders: invoice total + amount received → auto receivable balance + aging; supports multiple part-payments.
-- Inventory auto-adjusts on purchase (increase) and sales (decrease) orders.
-- Clean professional blue/teal theme.
+### Privacy & Architecture Philosophy
+- **100% Local & Privacy-First**: All inventory costs, asking prices, transaction history, broker commissions, client registries, and secret vault passwords remain strictly on the user's machine (zero unencrypted cloud transmission).
+- **Dual Engine Architecture**:
+  - **Client-Side Engine**: 100% reactive offline local storage (`frontend/src/gemstoneStorage.ts`, `frontend/src/packetStones.ts`, and `frontend/src/mockData.ts`).
+  - **Local API Server**: Optional Python FastAPI backend (`backend/server.py`) with SQLite persistence (`gemvault_local.db`).
+  - **Static Documentation Build**: Synchronized GitHub Pages build target (`docs/`) via `node sync-docs.js`.
 
-## Architecture
-- Backend: FastAPI + MongoDB (motor async), JWT (pyjwt) + passlib bcrypt. UUID string ids, soft deletes (deleted_at), all routes under /api.
-- Frontend: Expo Router (React Native), @tanstack/react-query, react-native-keyboard-controller, @react-native-vector-icons/material-design-icons, theme tokens in src/theme.ts.
-- Tabs: Home, Sales, Purchases, More. Stack screens: inventory, products, dealers, expenses, reports, staff, sales/new, sales/[id], purchases/new, purchases/[id], login.
+---
 
-## Personas
-- Owner: full access incl. staff management.
-- Staff: operational access (orders, inventory, dealers, expenses, reports); no staff management.
+## Core Entities & Data Architecture
 
-## Core Requirements (static)
-- Dashboard KPIs; sales/purchase orders with part-payments + aging; auto inventory; product/cost-sheet CRUD; dealer directory with call/WhatsApp; expenses; reports; auth + roles.
+### 1. Packet Inventory Master (`GemPacket`)
+- **Packet Identifier**: Unique packet numbering (`ex/1`, `ex/2`, `EM-101`, `RUB-04`). Uniqueness enforced within assigned box.
+- **Box Management**: Organized in multi-box vault trays (`Box 1 — Emerald Vault`, `Box 2 — Rubies & Sapphires`, etc.).
+- **Particulars**: Gemstone variety, origin (Zambian, Burmese Mogok, Ceylon, Colombian, Mozambique), treatments (Natural, Heated, Oiled, Minor Oil, Certified Unheated), and certification labs (GIA, GRS, IGI, Gübelin, SSEF, Self).
+- **Cut & Shape**: Oval, Cushion, Emerald Cut, Round Brilliant, Pear, Marquise, Princess, Cabochon, Radiant, Heart, Trilliant, Asscher, Baguette, Calibrated.
+- **Weight & Pieces**: Total weight in carats (`cts`) and pieces (`pcs`), with individual stone weight breakdowns (`stone_details`, `stone_weights`, and `sub_gems` for mixed parcels).
+- **Pricing & Margin**: Purchase cost, cost rate per carat, purchase date, supplier, target asking price, asking rate per carat, and minimum sale threshold.
+- **Stock Status**: `in_stock`, `on_approval` (issued on memo for inspection), `reserved`, or `sold`.
+- **Individual Stone State Tracking**: Exact tracking of each individual stone's lifecycle across partial memo allocations, partial approvals, and returns.
 
-## Implemented (2026-06)
-- JWT auth (owner seeded: owner@soneja.com / Soneja@123), /auth/me, staff CRUD (owner-only, RBAC).
-- Products CRUD + cost sheet (12 Worldtech models seeded, GST-inclusive cost + sell + qty).
-- Dealers CRUD (16 seeded) with call/WhatsApp deep links.
-- Sales & Purchase orders: create with line items, initial payment, auto inventory adjust, part-payments endpoint, pay_status + aging, soft-delete reverses stock. Opening PO seeded (87 units).
-- Expenses CRUD.
-- Dashboard (total sales, net profit, receivable, payable, inventory value, units in stock, low stock, recent sales).
-- Reports (summary, sales/purchases by month, top products, expense by category, overdue receivables/payables).
-- Toasts, loading/empty/error states, filter chips, FAB, safe-area handling, light/dark theme.
-- Tested end-to-end via testing_agent (backend 19/20 pass — the 1 miss was a parallel test race; frontend all critical flows pass).
+### 2. Sales & Approval Vouchers (`GemSale`)
+- **Direct Sales Invoices**: Packet allocation, rate per carat or total line pricing, GST handling (0.25% diamonds/gems, 1.5%, 3% jewelry), part-payments, and commercial receipt printing with local QR code verification.
+- **Approval Memos (Jangad / Memo)**: Issuing stones on approval to parties for examination without immediate billing.
+- **Approval Settlement (Partial & Full Returns)**:
+  - Supports customer taking a subset of pieces/carats and returning the rest to the vault.
+  - Automatically updates invoice total, balances, and restores returned stones to vault stock with correct piece/carat recalculations.
 
-## Backlog / Remaining
-- P1: Edit existing orders (currently create + delete only).
-- P1: Date picker on orders (currently uses today).
-- P2: Export/share invoice as PDF/image.
-- P2: Supplier directory (payables currently keyed off free-text supplier name on POs).
-- P2: Dealer-wise / supplier-wise outstanding statement screen.
-- P2: Object storage for product images.
+### 3. Third-Party Brokerage (`GemBrokerage`)
+- Handles brokered transactions between external sellers (Party A) and buyers (Party B) where the merchant acts purely as a middleman.
+- Calculates commission percentages (e.g., 1.5%) or fixed fees, tracking receivable balances and settlements.
 
-## Next Tasks
-- Gather feedback on dashboard KPIs and reports; consider date filters on reports.
+### 4. Purchases & Inward Intake (`GemPurchase`)
+- Intake of rough and polished lots directly into vault packets (`ex/1`, `ex/2`...).
+- Batch packet allocation with stone breakdown, box assignment, supplier payables, and optional middleman brokerage tracking.
 
-## Fixes Log
-- 2026-06: APK force-closed right after splash (worked in web preview). Root cause: `react-native-keyboard-controller` — a native module mounted at the app root (`KeyboardProvider`) and used on the login screen — initializes only in standalone builds, not in the web preview. Replaced it app-wide with a core React Native `KeyboardAvoidingView` + `ScrollView` drop-in (`src/components/keyboard-scroll.tsx`); removed `KeyboardProvider` from `_layout.tsx`. Also fixed expo/expo-router patch version drift flagged by expo-doctor. Requires regenerating the Android build.
+### 5. Categorized Operating Expenses (`GemExpense`)
+- Tracks lab certification fees, lapidary cutting/polishing, safe deposit locker rentals, armored transport (Brinks/Malca-Amit), trade shows, and office salaries.
+
+### 6. Reports & Financial Valuation (`/reports`)
+- Comprehensive P&L statement (Gross revenue, COGS, gross margin, brokerage commission, net business profit).
+- Complete inventory valuation at cost vs. asking price and unrealized vault profit.
+- Variety and shape analytics, buyer rankings, and password-protected cost reveal.
+
+### 7. Backup, Restore & Archival Engine (`backupEngine.ts`)
+- One-click JSON backup and restore covering all data tables, custom shapes, and system settings.
+- Weekly automated backup snapshots and business evaluation report generator.
+- Comprehensive Word Document (.doc) export containing full inventory dossiers.
+
+---
+
+## Active Routes Map (`HashRouter`)
+- `#/inventory`: Primary Packet & Box Vault Master
+- `#/purchases`: Purchase Procurement Master List
+- `#/purchases/new`: Purchase Intake & New Packet Creation
+- `#/purchases/:id/edit`: Edit Purchase
+- `#/sales`: Sales Invoices & Approval Vouchers Master
+- `#/sales/new`: Create Sale Invoice or Approval Memo Voucher
+- `#/sales/:id`: Luxury Printable Invoice View & QR Verification
+- `#/sales/:id/edit`: Edit Invoice / Approval
+- `#/brokerage`: Third-Party Brokerage Deals Ledger
+- `#/expenses`: Operating Expenses & Laboratory Charges
+- `#/assets`: Fixed Assets & Liquid Cash Management
+- `#/reports`: P&L Waterfall, Valuation & Analytics (Password Protected)
+- `#/buyers`: Customer & Supplier Network Directory
+- `#/packet/:id`: Public Offline Packet Dossier Document View

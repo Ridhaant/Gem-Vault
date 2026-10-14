@@ -236,7 +236,7 @@ export default function Staff() {
                   <input
                     className="input"
                     type="email"
-                    placeholder="rahul@soneja.com"
+                    placeholder="gemologist@shreejigems.com"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     required

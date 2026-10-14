@@ -1,14 +1,18 @@
 import { handleMockApi } from "./mockData";
 
 const BASE = import.meta.env.VITE_API_URL || "";
-export const TOKEN_KEY = "soneja_token";
+export const TOKEN_KEY = "gemvault_token";
 
 export function getToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY);
+  return localStorage.getItem(TOKEN_KEY) || localStorage.getItem("soneja_token");
 }
 export function setToken(token: string | null) {
-  if (token === null) localStorage.removeItem(TOKEN_KEY);
-  else localStorage.setItem(TOKEN_KEY, token);
+  if (token === null) {
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem("soneja_token");
+  } else {
+    localStorage.setItem(TOKEN_KEY, token);
+  }
 }
 
 export class ApiError extends Error {
