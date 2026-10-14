@@ -15,18 +15,8 @@ if (fs.existsSync(indexHtmlPath)) {
   fs.writeFileSync(notFoundHtmlPath, indexContent, "utf8");
   fs.writeFileSync(nojekyllPath, "", "utf8");
 
-  // Clean stale assets in docs/assets
-  if (fs.existsSync(assetsDir)) {
-    const files = fs.readdirSync(assetsDir);
-    for (const file of files) {
-      if (!indexContent.includes(file)) {
-        fs.unlinkSync(path.join(assetsDir, file));
-        console.log(`✓ Removed stale asset: ${file}`);
-      }
-    }
-  }
-
   console.log("✓ Successfully synchronized docs/404.html and docs/.nojekyll");
+
 } else {
   console.error("docs/index.html not found!");
 }

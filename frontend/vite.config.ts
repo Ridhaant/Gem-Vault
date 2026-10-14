@@ -8,7 +8,7 @@ export default defineConfig({
   plugins: [react()],
   build: {
     outDir: path.resolve(import.meta.dirname, '../docs'),
-    emptyOutDir: false,
+    emptyOutDir: true,
   },
   server: {
     host: true,
