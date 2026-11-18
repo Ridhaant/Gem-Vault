@@ -1,5 +1,6 @@
 import React, { useRef, useState } from "react";
 import type { GemPacket } from "./types/gemstone";
+import { hasGenuineIndividualWeights } from "./packetStones";
 import { QREncoder, formatPacketPayload, type QrPayloadMode } from "./qrCode";
 import { formatINR } from "./format";
 import { useNavigate } from "react-router-dom";
@@ -30,8 +31,7 @@ export function PacketQrModal({
 
   // Generate payload based on mode
   const qrPayload = formatPacketPayload(packet, qrMode, lanHost);
-  const isMultiStone = (packet.pieces || 1) > 1 || (packet.stone_details && packet.stone_details.length > 1) || (packet.sub_gems && packet.sub_gems.length > 0);
-  const avgCarats = isMultiStone ? (packet.weight / packet.pieces).toFixed(2) : packet.weight.toFixed(2);
+  const isMultiStone = !packet.is_uncountable && ((Number(packet.pieces) || 0) > 1 || (hasGenuineIndividualWeights(packet) && ((packet.stone_details && packet.stone_details.length > 1) || (packet.sub_gems && packet.sub_gems.length > 0))));
 
   // ISO/IEC 18004 Standard QR with 4-module quiet zone
   const qrSvg = QREncoder.toSVG(qrPayload, 180, 4);
@@ -41,12 +41,12 @@ export function PacketQrModal({
     const printWindow = window.open("", "_blank");
     if (!printWindow) return;
 
-    const subGemsHtml = packet.stone_details && packet.stone_details.length > 0
+    const subGemsHtml = (hasGenuineIndividualWeights(packet) && packet.stone_details && packet.stone_details.length > 0)
       ? `<div style="margin-top: 4px; padding-top: 3px; border-top: 1px dashed #94a3b8; font-size: 8px;">
           <strong style="color: #0369a1;">INDIVIDUAL STONES:</strong>
           ${packet.stone_details.map((s, i) => `<div>${i + 1}. ${s.variety || packet.particulars} (${s.shape || packet.shape}) • ${s.weight} cts ${s.mm_size ? `• ${s.mm_size}` : ''}</div>`).join('')}
         </div>`
-      : packet.sub_gems && packet.sub_gems.length > 0
+      : (hasGenuineIndividualWeights(packet) && packet.sub_gems && packet.sub_gems.length > 0)
       ? `<div style="margin-top: 4px; padding-top: 3px; border-top: 1px dashed #94a3b8; font-size: 8px;">
           <strong style="color: #0369a1;">BOX ITEMS:</strong>
           ${packet.sub_gems.map((g, i) => `<div>${i + 1}. ${g.variety} (${g.shape}) • ${g.weight} cts (${g.pieces} pc) ${g.mm_size ? `• ${g.mm_size}` : ''}</div>`).join('')}
@@ -156,7 +156,7 @@ export function PacketQrModal({
               ${isMultiStone ? `<div style="font-size: 8px; font-weight: 900; background: #e0f2fe; color: #0369a1; padding: 1px 4px; border-radius: 2px; margin-bottom: 2px; display: inline-block;">PARCEL LOT (${packet.pieces} STONES)</div>` : ""}
               <div class="specs-grid">
                 <div class="spec-row"><span class="spec-label">Weight:</span> <span class="spec-val">${packet.weight} cts</span></div>
-                <div class="spec-row"><span class="spec-label">Pieces:</span> <span class="spec-val">${packet.pieces} pcs</span></div>
+                <div class="spec-row"><span class="spec-label">Pieces:</span> <span class="spec-val">${packet.is_uncountable ? 'Uncountable' : `${packet.pieces} pcs`}</span></div>
                 <div class="spec-row"><span class="spec-label">Shape:</span> <span class="spec-val">${packet.shape}</span></div>
                 <div class="spec-row"><span class="spec-label">Size:</span> <span class="spec-val">${packet.mm_size || "—"}</span></div>
               </div>
@@ -324,7 +324,7 @@ export function PacketQrModal({
             >
               <span style={{ fontSize: 16 }}>📦</span>
               <div>
-                <strong>Multi-Stone Parcel Box:</strong> Contains <strong>{packet.pieces} gemstones</strong> ({packet.weight} cts total • avg <strong>{avgCarats} cts/stone</strong>)
+                <strong>Multi-Stone Parcel Box:</strong> Contains <strong>{packet.is_uncountable ? "Uncountable Gemstones" : `${packet.pieces} gemstones`}</strong> ({packet.weight} cts total)
                 {packet.stone_details && packet.stone_details.length > 0 ? (
                   <span style={{ display: "block", marginTop: 2, fontSize: 11, color: "#047857" }}>
                     ✓ Individual stone details: {packet.stone_details.slice(0, 4).map((s) => `${s.variety || packet.particulars} (${Number(s.weight).toFixed(2)}ct)`).join(", ")}{packet.stone_details.length > 4 ? ` +${packet.stone_details.length - 4} more` : ""}
@@ -437,7 +437,7 @@ export function PacketQrModal({
                     width: "fit-content",
                   }}
                 >
-                  Parcel Lot: {packet.pieces} stones
+                  Parcel Lot: {packet.is_uncountable ? "Uncountable" : `${packet.pieces} stones`}
                 </div>
               )}
 
@@ -455,7 +455,7 @@ export function PacketQrModal({
                 </div>
                 <div>
                   <span style={{ color: "#64748b" }}>Pieces: </span>
-                  <strong style={{ color: "#0f172a" }}>{packet.pieces} pcs</strong>
+                  <strong style={{ color: "#0f172a" }}>{packet.is_uncountable ? "Uncountable" : `${packet.pieces} pcs`}</strong>
                 </div>
                 <div>
                   <span style={{ color: "#64748b" }}>Shape: </span>

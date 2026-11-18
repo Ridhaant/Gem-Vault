@@ -155,4 +155,26 @@ export function amountToWords(amount: number | undefined | null): string {
   return `${result} Only`;
 }
 
+/**
+ * Format weight:
+ * - For grams (unit === 'g' or 'grams' or 'gm'): 3 significant decimal places (0.001 g)
+ * - For carats (unit === 'cts' or 'ct'): 2 decimal places (0.01 cts)
+ */
+export function formatWeight(n: number | undefined | null, unit: string = "cts"): string {
+  if (n == null || isNaN(n)) return unit?.toLowerCase().startsWith("g") ? "0.000" : "0.00";
+  const num = Number(n);
+  const u = (unit || "cts").trim().toLowerCase();
+  if (u === "g" || u === "grams" || u === "gm" || u === "gram") {
+    return num.toFixed(3);
+  }
+  return num.toFixed(2);
+}
+
+export function formatWeightWithUnit(n: number | undefined | null, unit: string = "cts"): string {
+  const formatted = formatWeight(n, unit);
+  const u = (unit || "cts").trim();
+  return `${formatted} ${u}`;
+}
+
+
 

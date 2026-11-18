@@ -15,8 +15,28 @@ if (fs.existsSync(indexHtmlPath)) {
   fs.writeFileSync(notFoundHtmlPath, indexContent, "utf8");
   fs.writeFileSync(nojekyllPath, "", "utf8");
 
-  console.log("✓ Successfully synchronized docs/404.html and docs/.nojekyll");
+  // Clean stale assets in docs/assets without deleting dynamic imported chunks
+  if (fs.existsSync(assetsDir)) {
+    const files = fs.readdirSync(assetsDir);
+    let combinedReferences = indexContent;
+    for (const file of files) {
+      if (file.endsWith(".js") || file.endsWith(".css")) {
+        try {
+          combinedReferences += " " + fs.readFileSync(path.join(assetsDir, file), "utf8");
+        } catch {}
+      }
+    }
+    for (const file of files) {
+      if (!combinedReferences.includes(file)) {
+        try {
+          fs.unlinkSync(path.join(assetsDir, file));
+          console.log(`✓ Removed stale asset: ${file}`);
+        } catch {}
+      }
+    }
+  }
 
+  console.log("✓ Successfully synchronized docs/404.html and docs/.nojekyll");
 } else {
   console.error("docs/index.html not found!");
 }

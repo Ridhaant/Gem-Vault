@@ -1,23 +1,21 @@
 import React, { useState, useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { apiGet, apiPost, setCostToken } from "./api";
 import {
   createAndDownloadBackupNow,
   downloadMasterWordBackup,
   downloadJsonBackup,
-  printBusinessEvaluationReport,
-  generateBusinessEvaluationReport,
   getLocalBackupHistory,
   checkAndRunAutomatedWeeklyBackup,
-  restoreDatabaseFromJson,
   type BackupHistoryItem,
 } from "./backupEngine";
 import {
   resetToGemstoneSeed,
-  getOverallProfitAndAnalytics,
   verifyAnalyticsPassword,
 } from "./gemstoneStorage";
 import { useToast } from "./toast";
 import { formatINR } from "./format";
+import { idbGet } from "./offlineDb";
 
 export function LocalVaultBadge({ onOpenModal }: { onOpenModal: () => void }) {
   return (
@@ -40,11 +38,13 @@ export function LocalBackupModal({
 }: {
   open: boolean;
   onClose: () => void;
-  initialTab?: "backup" | "report" | "restore" | "archive";
+  initialTab?: "backup" | "restore" | "archive";
 }) {
   const queryClient = useQueryClient();
   const { show } = useToast();
-  const [activeTab, setActiveTab] = useState<"backup" | "report" | "restore" | "archive">(initialTab);
+  const [activeTab, setActiveTab] = useState<"backup" | "restore" | "archive">(
+    initialTab === ("report" as any) ? "backup" : initialTab
+  );
   const [importing, setImporting] = useState(false);
   const [showConfirmReset, setShowConfirmReset] = useState(false);
   const [history, setHistory] = useState<BackupHistoryItem[]>([]);
@@ -59,7 +59,7 @@ export function LocalBackupModal({
 
   useEffect(() => {
     if (open) {
-      setActiveTab(initialTab);
+      setActiveTab(initialTab === ("report" as any) ? "backup" : initialTab);
       setHistory(getLocalBackupHistory());
       const res = checkAndRunAutomatedWeeklyBackup();
       setWeeklyStatus(res.message);
@@ -69,14 +69,29 @@ export function LocalBackupModal({
     }
   }, [open, initialTab]);
 
-  const handleUnlockPin = (e: React.FormEvent) => {
+  const handleUnlockPin = async (e: React.FormEvent) => {
     e.preventDefault();
+    try {
+      const res = await apiPost("/cost-price-password/verify", { password: pinInput });
+      if (res?.valid) {
+        if (res?.token) {
+          setCostToken(res.token);
+        }
+        setIsPinUnlocked(true);
+        sessionStorage.setItem("gemvault_master_admin_unlocked", "true");
+        setPinError(false);
+        setPinInput("");
+        show("✓ Master PIN verified. Backup Center unlocked.", "success");
+        return;
+      }
+    } catch {}
+
     if (verifyAnalyticsPassword(pinInput)) {
       setIsPinUnlocked(true);
       sessionStorage.setItem("gemvault_master_admin_unlocked", "true");
       setPinError(false);
       setPinInput("");
-      show("✓ Master PIN verified. Backup & Report Center unlocked.", "success");
+      show("✓ Master PIN verified. Backup Center unlocked.", "success");
     } else {
       setPinError(true);
       show("Incorrect PIN. Access denied.", "error");
@@ -176,9 +191,6 @@ export function LocalBackupModal({
     );
   }
 
-  const stats = getOverallProfitAndAnalytics();
-  const reportData = generateBusinessEvaluationReport();
-
   // 1. Separate Action: Create Backup Now (Dual Download: Word .doc + JSON .json)
   const handleCreateBackupNow = () => {
     try {
@@ -208,55 +220,69 @@ export function LocalBackupModal({
     }
   };
 
-  // 2. Separate Action: Generate & Print Business Report
-  const handlePrintReport = () => {
-    try {
-      printBusinessEvaluationReport();
-      show("Opening printable Business Evaluation Report...", "info");
-    } catch (err: any) {
-      show("Failed to open report: " + err.message, "error");
-    }
-  };
-
-  // 3. Separate Action: Restore Backup
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // 2. Separate Action: Restore Backup
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     setImporting(true);
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const text = event.target?.result as string;
-        const res = restoreDatabaseFromJson(text);
-        if (res.success) {
-          queryClient.invalidateQueries();
-          show("✓ Shreeji Gems database restored successfully!", "success");
-          onClose();
-        } else {
-          show(res.message, "error");
-        }
-      } catch (err: any) {
-        show("Failed to restore backup: " + err.message, "error");
-      } finally {
-        setImporting(false);
+    try {
+      show("Uploading and restoring database snapshot...", "info");
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const token = localStorage.getItem("gemvault_token");
+      const costToken = localStorage.getItem("gemvault_cost_token");
+      const headers: Record<string, string> = {};
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+      if (costToken) headers["X-Cost-Token"] = costToken;
+
+      const res = await fetch("/api/backup/restore", {
+        method: "POST",
+        headers,
+        body: formData,
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.detail || "Server error: " + res.status);
       }
-    };
-    reader.readAsText(file);
+
+      const result = await res.json();
+      queryClient.invalidateQueries();
+      show(`✓ Shreeji Gems database restored successfully! (${result.counts?.packets || 0} packets restored)`, "success");
+      onClose();
+    } catch (err: any) {
+      show("Failed to restore backup: " + err.message, "error");
+    } finally {
+      setImporting(false);
+      if (e.target) e.target.value = "";
+    }
   };
 
   // Restore from historical archive item
-  const handleRestoreFromHistory = (item: BackupHistoryItem) => {
+  const handleRestoreFromHistory = async (item: BackupHistoryItem) => {
     if (!window.confirm(`Restore database to snapshot from ${item.dateFormatted}? Any unsaved newer data will be overwritten.`)) {
       return;
     }
-    const res = restoreDatabaseFromJson(item.jsonPayload);
-    if (res.success) {
+    setImporting(true);
+    try {
+      let payload = item.jsonPayload;
+      if (!payload) {
+        payload = (await idbGet<string>("backup_payload_" + item.id)) || "";
+      }
+      if (!payload) {
+        throw new Error("No backup snapshot payload found in archive.");
+      }
+      show("Restoring database to archived snapshot...", "info");
+      const res = await apiPost("/backup/restore", JSON.parse(payload));
       queryClient.invalidateQueries();
       show(`✓ Restored to backup snapshot (${item.dateFormatted})!`, "success");
       onClose();
-    } else {
-      show(res.message, "error");
+    } catch (err: any) {
+      show("Failed to restore backup: " + err.message, "error");
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -264,7 +290,7 @@ export function LocalBackupModal({
     resetToGemstoneSeed();
     queryClient.invalidateQueries();
     setShowConfirmReset(false);
-    show("Database reset to luxury gemstone seed catalog!", "success");
+    show("Database reset to clean empty vault!", "success");
     onClose();
   };
 
@@ -280,7 +306,7 @@ export function LocalBackupModal({
             <span style={{ fontSize: 26 }}>🔒</span>
             <div>
               <h2 style={{ fontSize: 18, fontWeight: 900, margin: 0 }}>
-                Shreeji Gems Local Backup & Business Report Center
+                Shreeji Gems Local Backup & Restore Center
               </h2>
               <span style={{ fontSize: 12, color: "var(--muted)" }}>
                 Automated Weekly Backups • 100% Offline Storage on this Computer
@@ -296,7 +322,7 @@ export function LocalBackupModal({
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "1fr 1.2fr 1fr 1fr",
+            gridTemplateColumns: "1fr 1fr 1fr",
             gap: 6,
             background: "var(--surface-sunken)",
             padding: 4,
@@ -309,13 +335,6 @@ export function LocalBackupModal({
             style={{ fontSize: 12 }}
           >
             💾 Backup Now
-          </button>
-          <button
-            className={`btn btn-sm ${activeTab === "report" ? "btn-primary" : "btn-ghost"}`}
-            onClick={() => setActiveTab("report")}
-            style={{ fontSize: 12 }}
-          >
-            📊 Business Report
           </button>
           <button
             className={`btn btn-sm ${activeTab === "restore" ? "btn-primary" : "btn-ghost"}`}
@@ -423,116 +442,25 @@ export function LocalBackupModal({
                 </div>
               </div>
 
-              {/* Quick Metrics */}
+              {/* Security & Backup Status */}
               <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 }}>
-                <div style={{ background: "var(--surface-sunken)", padding: "8px 10px", borderRadius: 6, textAlign: "center" }}>
-                  <div style={{ fontSize: 11, color: "var(--muted)" }}>Packets in Vault</div>
-                  <div style={{ fontSize: 16, fontWeight: 800, color: "var(--primary)" }}>{stats.vault_packets_count} pkts</div>
+                <div style={{ background: "var(--surface-sunken)", padding: "10px", borderRadius: 6, textAlign: "center" }}>
+                  <div style={{ fontSize: 11, color: "var(--muted)" }}>Storage Mode</div>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: "var(--primary)", marginTop: 2 }}>🔒 100% Offline SQLite</div>
                 </div>
-                <div style={{ background: "var(--surface-sunken)", padding: "8px 10px", borderRadius: 6, textAlign: "center" }}>
-                  <div style={{ fontSize: 11, color: "var(--muted)" }}>Total Vault Valuation</div>
-                  <div style={{ fontSize: 16, fontWeight: 800, color: "#f59e0b" }}>{formatINR(stats.vault_cost_valuation)}</div>
+                <div style={{ background: "var(--surface-sunken)", padding: "10px", borderRadius: 6, textAlign: "center" }}>
+                  <div style={{ fontSize: 11, color: "var(--muted)" }}>Auto Weekly Backup</div>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: "#10b981", marginTop: 2 }}>✓ Active & Guarded</div>
                 </div>
-                <div style={{ background: "var(--surface-sunken)", padding: "8px 10px", borderRadius: 6, textAlign: "center" }}>
-                  <div style={{ fontSize: 11, color: "var(--muted)" }}>Net Profit Recorded</div>
-                  <div style={{ fontSize: 16, fontWeight: 800, color: "var(--success)" }}>{formatINR(stats.net_profit)}</div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* TAB 2: BUSINESS EVALUATION & WEEKLY REPORT */}
-          {activeTab === "report" && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-              <div
-                style={{
-                  background: "var(--surface-sunken)",
-                  border: "1.5px solid var(--border)",
-                  borderRadius: 8,
-                  padding: 14,
-                }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                  <div>
-                    <h3 style={{ fontSize: 15, fontWeight: 900, margin: 0 }}>
-                      📊 Executive Business Evaluation Report
-                    </h3>
-                    <span style={{ fontSize: 11, color: "var(--muted)" }}>
-                      Full P&L, inventory velocity & gemstone valuation breakdown
-                    </span>
-                  </div>
-                  <button className="btn btn-primary btn-sm" onClick={handlePrintReport}>
-                    🖨️ Print / Save PDF Report
-                  </button>
-                </div>
-
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "1fr 1fr",
-                    gap: 10,
-                    fontSize: 12,
-                    background: "var(--surface)",
-                    padding: 12,
-                    borderRadius: 6,
-                    border: "1px solid var(--border)",
-                  }}
-                >
-                  <div>
-                    <strong>Total Vault Cost:</strong> {formatINR(reportData.inventory.costValuation)}
-                  </div>
-                  <div>
-                    <strong>Target Asking Value:</strong> {formatINR(reportData.inventory.askingValuation)}
-                  </div>
-                  <div>
-                    <strong>In-Stock Stones:</strong> {reportData.inventory.inStockPackets} pkts ({reportData.inventory.inStockCarats} cts)
-                  </div>
-                  <div>
-                    <strong>Multi-Gem Boxes:</strong> {reportData.inventory.multiGemBoxesCount} parcel lots
-                  </div>
-                  <div>
-                    <strong>Realized Sales:</strong> {formatINR(reportData.financials.realizedRevenue)}
-                  </div>
-                  <div style={{ color: "var(--success)" }}>
-                    <strong>Net Operating Profit:</strong> {formatINR(reportData.financials.netOperatingProfit)}
-                  </div>
-                  <div>
-                    <strong>Gross Trading Margin:</strong> {reportData.financials.grossMarginPercent}%
-                  </div>
-                  <div>
-                    <strong>Pending Receivables:</strong> {formatINR(reportData.financials.outstandingReceivables)}
-                  </div>
-                </div>
-              </div>
-
-              {/* Gemstone Variety Summary */}
-              <div>
-                <h4 style={{ fontSize: 13, fontWeight: 800, margin: "0 0 6px" }}>
-                  Top Varieties in Vault by Cost Value:
-                </h4>
-                <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 130, overflowY: "auto" }}>
-                  {reportData.varietyBreakdown.slice(0, 5).map((v) => (
-                    <div
-                      key={v.variety}
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        padding: "4px 8px",
-                        background: "var(--surface-sunken)",
-                        borderRadius: 4,
-                        fontSize: 11,
-                      }}
-                    >
-                      <span><strong>{v.variety}</strong> ({v.packetsCount} pkts • {v.carats} cts)</span>
-                      <span style={{ fontWeight: 800 }}>{formatINR(v.costValuation)}</span>
-                    </div>
-                  ))}
+                <div style={{ background: "var(--surface-sunken)", padding: "10px", borderRadius: 6, textAlign: "center" }}>
+                  <div style={{ fontSize: 11, color: "var(--muted)" }}>Snapshot Format</div>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: "#f59e0b", marginTop: 2 }}>Word (.doc) + JSON</div>
                 </div>
               </div>
             </div>
           )}
 
-          {/* TAB 3: RESTORE BACKUP */}
+          {/* TAB 2: RESTORE BACKUP */}
           {activeTab === "restore" && (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               <div
@@ -552,27 +480,29 @@ export function LocalBackupModal({
                   Select any past backup <code>.json</code> file to restore packets, sales, expenses, and buyer history.
                 </p>
 
-                <label
-                  className="btn btn-outline"
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 8,
-                    padding: "8px 20px",
-                    cursor: "pointer",
-                    fontWeight: 700,
-                  }}
-                >
-                  <span>Select Backup File (.json)</span>
-                  <input
-                    type="file"
-                    accept=".json"
-                    style={{ display: "none" }}
-                    onChange={handleFileUpload}
-                    disabled={importing}
-                  />
-                </label>
-                {importing && <div style={{ marginTop: 8, fontSize: 12, color: "var(--primary)" }}>Importing database...</div>}
+                <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap", marginTop: 8 }}>
+                  <label
+                    className="btn btn-primary"
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 8,
+                      padding: "8px 24px",
+                      cursor: "pointer",
+                      fontWeight: 700,
+                    }}
+                  >
+                    <span>📂 Select Backup File (.json) to Restore</span>
+                    <input
+                      type="file"
+                      accept=".json"
+                      style={{ display: "none" }}
+                      onChange={handleFileUpload}
+                      disabled={importing}
+                    />
+                  </label>
+                </div>
+                {importing && <div style={{ marginTop: 8, fontSize: 12, color: "var(--primary)" }}>Restoring database... Please wait...</div>}
               </div>
 
               {/* Safety notice */}
@@ -665,9 +595,11 @@ export function LocalBackupModal({
             }}
           >
             <div>
-              <div style={{ fontSize: 12, fontWeight: 700 }}>Reset to Seed Catalog</div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "var(--foreground)" }}>
+                Reset Vault to Client-Ready Clean Slate
+              </div>
               <div style={{ fontSize: 10.5, color: "var(--muted)" }}>
-                Reload initial catalog of Rubies, Emeralds & Sapphires
+                Clear all test transactions, packets, test parties & suppliers for client handover
               </div>
             </div>
             {!showConfirmReset ? (
@@ -675,7 +607,7 @@ export function LocalBackupModal({
                 className="btn btn-ghost btn-xs"
                 onClick={() => setShowConfirmReset(true)}
               >
-                Reset Demo Data
+                Reset Database
               </button>
             ) : (
               <div style={{ display: "flex", gap: 6 }}>

@@ -15,6 +15,9 @@ const PETTY_CATEGORIES = [
 ];
 
 const BUSINESS_CATEGORIES = [
+  "Purchased Stones",
+  "Purchase Brokerage",
+  "Brokerage Payout",
   "Certification",
   "Cutting & Polishing",
   "Vault & Safe Deposit",
@@ -134,6 +137,7 @@ export default function Expenses() {
     mutationFn: (id: string) => apiDelete(`/expenses/${id}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["expenses"] });
+      queryClient.invalidateQueries({ queryKey: ["brokerage"] });
       queryClient.invalidateQueries({ queryKey: ["analytics_overview"] });
       show("Expense deleted", "info");
     },
@@ -368,7 +372,12 @@ export default function Expenses() {
             onChange={(e) => setCategoryFilter(e.target.value)}
           >
             <option value="all">All Categories</option>
-            {(activeTab === "petty" ? pettyCategories : BUSINESS_CATEGORIES).map((c) => (
+            {(activeTab === "petty"
+              ? pettyCategories
+              : activeTab === "business"
+              ? BUSINESS_CATEGORIES
+              : Array.from(new Set([...BUSINESS_CATEGORIES, ...pettyCategories]))
+            ).map((c) => (
               <option key={c} value={c}>
                 {c}
               </option>
@@ -453,26 +462,103 @@ export default function Expenses() {
                         <span style={{ fontSize: 11, color: "var(--muted)" }}>{exp.note || "—"}</span>
                       </td>
                       <td style={{ textAlign: "right" }}>
-                        <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
-                          <button
-                            className="btn btn-ghost btn-xs"
-                            onClick={() => handleEditExpense(exp)}
-                            title="Edit"
-                          >
-                            ✏️
-                          </button>
-                          <button
-                            className="btn btn-ghost btn-xs"
-                            style={{ color: "#ef4444" }}
-                            onClick={() => {
-                              if (window.confirm(`Delete expense for "${exp.payee}"?`)) {
-                                deleteExpenseMutation.mutate(exp.id);
-                              }
-                            }}
-                            title="Delete"
-                          >
-                            🗑️
-                          </button>
+                        <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", alignItems: "center" }}>
+                          {exp.id.startsWith("pur-exp-") ? (
+                            <span
+                              style={{
+                                fontSize: 10,
+                                fontWeight: 700,
+                                color: "var(--muted)",
+                                padding: "2px 6px",
+                                background: "var(--surface-sunken)",
+                                border: "1px solid var(--border)",
+                                borderRadius: 4,
+                              }}
+                              title="Procurement expense synchronized with Gemstone Purchases"
+                            >
+                              Procurement
+                            </span>
+                          ) : exp.id.startsWith("pur-brk-exp-") ? (
+                            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                              <span
+                                style={{
+                                  fontSize: 10,
+                                  fontWeight: 800,
+                                  color: "#8b5cf6",
+                                  padding: "2px 6px",
+                                  background: "rgba(139, 92, 246, 0.12)",
+                                  border: "1px solid rgba(139, 92, 246, 0.3)",
+                                  borderRadius: 4,
+                                }}
+                                title="Purchase middleman brokerage fee synchronized with Gemstone Purchases"
+                              >
+                                Purchase Brokerage
+                              </span>
+                              <button
+                                className="btn btn-ghost btn-xs"
+                                style={{ color: "#ef4444" }}
+                                onClick={() => {
+                                  if (window.confirm(`Remove this purchase brokerage fee of ${formatINR(exp.amount)} for purchase #${exp.packet_ref}?`)) {
+                                    deleteExpenseMutation.mutate(exp.id);
+                                  }
+                                }}
+                                title="Remove Purchase Brokerage"
+                              >
+                                🗑️
+                              </button>
+                            </div>
+                          ) : exp.id.startsWith("brk-seller-exp-") ? (
+                            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                              <span
+                                style={{
+                                  fontSize: 10,
+                                  fontWeight: 800,
+                                  color: "#d97706",
+                                  padding: "2px 6px",
+                                  background: "rgba(245, 158, 11, 0.12)",
+                                  border: "1px solid rgba(245, 158, 11, 0.3)",
+                                  borderRadius: 4,
+                                }}
+                                title="Brokerage seller payout synchronized with Third-Party Brokerage Deals"
+                              >
+                                Deal Payout
+                              </span>
+                              <button
+                                className="btn btn-ghost btn-xs"
+                                style={{ color: "#ef4444" }}
+                                onClick={() => {
+                                  if (window.confirm(`Remove this brokerage payout of ${formatINR(exp.amount)}? This will clear the amount paid to seller on deal ${exp.packet_ref}.`)) {
+                                    deleteExpenseMutation.mutate(exp.id);
+                                  }
+                                }}
+                                title="Remove Brokerage Payout"
+                              >
+                                🗑️
+                              </button>
+                            </div>
+                          ) : (
+                            <>
+                              <button
+                                className="btn btn-ghost btn-xs"
+                                onClick={() => handleEditExpense(exp)}
+                                title="Edit"
+                              >
+                                ✏️
+                              </button>
+                              <button
+                                className="btn btn-ghost btn-xs"
+                                style={{ color: "#ef4444" }}
+                                onClick={() => {
+                                  if (window.confirm(`Delete expense for "${exp.payee}"?`)) {
+                                    deleteExpenseMutation.mutate(exp.id);
+                                  }
+                                }}
+                                title="Delete"
+                              >
+                                🗑️
+                              </button>
+                            </>
+                          )}
                         </div>
                       </td>
                     </tr>

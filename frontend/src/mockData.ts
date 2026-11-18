@@ -20,14 +20,20 @@ import {
   getStoredBrokerage,
   saveBrokerageDeal,
   deleteBrokerageDeal,
+  addPaymentToBrokerageSeller,
+  addPaymentToBrokerageBuyer,
+  addPaymentToBrokerageCommission,
   getStoredPurchases,
   savePurchase,
   deletePurchase,
+  cancelPurchase,
   getStoredExpenses,
   saveExpense,
   deleteExpense,
   getStoredBuyers,
   saveBuyer,
+  deleteBuyer,
+  clearStoredBuyers,
   getStoredBoxes,
   saveBox,
   deleteBox,
@@ -59,9 +65,19 @@ import {
   getCostPricePassword,
   setCostPricePassword,
   verifyCostPricePassword,
+  getStoredSuppliers,
+  saveSupplier,
+  clearStoredSuppliers,
+  getStoredBrokers,
+  saveBroker,
+  clearStoredBrokers,
+  setPurchaseBrokeragePaid,
+  addPaymentToPurchaseBroker,
+  markPurchaseBrokerageFullPaid,
   addPaymentToPurchase,
   markPurchaseFullPaymentPaid,
   settleApprovalMemo,
+  convertSaleToApproval,
   verifyAnalyticsPassword,
   setAnalyticsPassword,
   getOverallProfitAndAnalytics,
@@ -112,7 +128,10 @@ export function handleMockApi(path: string, method = "GET", body?: any): any {
 
   // Authentication (100% Local offline vault master credentials)
   if (p === "/auth/login") {
-    const { email } = body || {};
+    const { email, password } = body || {};
+    if (password !== "2014") {
+      throw new Error("Incorrect vault passcode / key. Access denied.");
+    }
     return {
       access_token: "gemvault-local-token-" + Date.now(),
       user: {
@@ -325,6 +344,12 @@ export function handleMockApi(path: string, method = "GET", body?: any): any {
     return settleApprovalMemo(sId, body?.items || [], body?.options);
   }
 
+  const convertApprovalMatch = p.match(/^\/sales\/([^/?]+)\/convert-to-approval$/);
+  if (convertApprovalMatch && method === "POST") {
+    const sId = convertApprovalMatch[1];
+    return convertSaleToApproval(sId, body?.options);
+  }
+
   // -------------------------------------------------------------
   // Brokerage (Third-Party Deals)
   // -------------------------------------------------------------
@@ -351,6 +376,21 @@ export function handleMockApi(path: string, method = "GET", body?: any): any {
     if (method === "DELETE") {
       return { success: deleteBrokerageDeal(bId) };
     }
+  }
+
+  const brokerageSellerPayMatch = p.match(/^\/brokerage\/([^/?]+)\/seller-payment$/);
+  if (brokerageSellerPayMatch && method === "POST") {
+    return addPaymentToBrokerageSeller(brokerageSellerPayMatch[1], body);
+  }
+
+  const brokerageBuyerPayMatch = p.match(/^\/brokerage\/([^/?]+)\/buyer-payment$/);
+  if (brokerageBuyerPayMatch && method === "POST") {
+    return addPaymentToBrokerageBuyer(brokerageBuyerPayMatch[1], body);
+  }
+
+  const brokerageCommPayMatch = p.match(/^\/brokerage\/([^/?]+)\/commission-payment$/);
+  if (brokerageCommPayMatch && method === "POST") {
+    return addPaymentToBrokerageCommission(brokerageCommPayMatch[1], body);
   }
 
   // -------------------------------------------------------------
@@ -395,6 +435,59 @@ export function handleMockApi(path: string, method = "GET", body?: any): any {
     const updated = markPurchaseFullPaymentPaid(purId, body?.payment_mode);
     if (!updated) throw new Error("Purchase not found");
     return updated;
+  }
+
+  const purchaseBrokeragePaidMatch = p.match(/^\/purchases\/([^/?]+)\/brokerage-paid$/);
+  if (purchaseBrokeragePaidMatch && method === "POST") {
+    const purId = purchaseBrokeragePaidMatch[1];
+    const updated = setPurchaseBrokeragePaid(purId, body?.paid);
+    if (!updated) throw new Error("Purchase not found");
+    return updated;
+  }
+
+  const purchaseBrokerPaymentsMatch = p.match(/^\/purchases\/([^/?]+)\/broker-payments$/);
+  if (purchaseBrokerPaymentsMatch && method === "POST") {
+    const purId = purchaseBrokerPaymentsMatch[1];
+    const updated = addPaymentToPurchaseBroker(purId, body);
+    if (!updated) throw new Error("Purchase not found");
+    return updated;
+  }
+
+  const purchaseBrokerFullPayMatch = p.match(/^\/purchases\/([^/?]+)\/broker-full-payment$/);
+  if (purchaseBrokerFullPayMatch && method === "POST") {
+    const purId = purchaseBrokerFullPayMatch[1];
+    const updated = markPurchaseBrokerageFullPaid(purId, body?.payment_mode);
+    if (!updated) throw new Error("Purchase not found");
+    return updated;
+  }
+
+  const purchaseCancelMatch = p.match(/^\/purchases\/([^/?]+)\/cancel$/);
+  if (purchaseCancelMatch && method === "POST") {
+    const purId = purchaseCancelMatch[1];
+    const updated = cancelPurchase(purId, body?.reason);
+    if (!updated) throw new Error("Purchase not found");
+    return updated;
+  }
+
+
+  // -------------------------------------------------------------
+  // Suppliers / Brokers / Particulars (Auto-complete & persistent)
+  // -------------------------------------------------------------
+  if (p === "/suppliers") {
+    if (method === "GET") return getStoredSuppliers();
+    if (method === "POST") return saveSupplier(typeof body === "string" ? body : (body?.name || ""));
+    if (method === "DELETE") return clearStoredSuppliers();
+  }
+
+  if (p === "/brokers") {
+    if (method === "GET") return getStoredBrokers();
+    if (method === "POST") return saveBroker(typeof body === "string" ? body : (body?.name || ""));
+    if (method === "DELETE") return clearStoredBrokers();
+  }
+
+  if (p === "/particulars") {
+    if (method === "GET") return getStoredParticulars();
+    if (method === "POST") return saveCustomParticular(typeof body === "string" ? body : (body?.name || ""));
   }
 
   // -------------------------------------------------------------
@@ -481,6 +574,16 @@ export function handleMockApi(path: string, method = "GET", body?: any): any {
     if (method === "POST") {
       return saveBuyer(body);
     }
+    if (method === "DELETE") {
+      return { success: clearStoredBuyers() };
+    }
+  }
+
+  if (p.startsWith("/buyers/")) {
+    const buyerId = p.split("/")[2];
+    if (method === "DELETE") {
+      return { success: deleteBuyer(buyerId) };
+    }
   }
 
   // -------------------------------------------------------------
@@ -505,7 +608,7 @@ export function handleMockApi(path: string, method = "GET", body?: any): any {
 
   if (p === "/backup/reset" && method === "POST") {
     resetToGemstoneSeed();
-    return { success: true, message: "Reset to default gemstone database complete." };
+    return { success: true, message: "Reset to clean gemstone database complete." };
   }
 
   // Fallback default

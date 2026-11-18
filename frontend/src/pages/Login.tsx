@@ -1,15 +1,17 @@
-import { useState } from "react";
+import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../auth";
 import { useToast } from "../toast";
+import { Gemstone3D, type GemstoneTheme } from "../Gemstone3D";
 
 export default function Login() {
   const { login } = useAuth();
   const navigate = useNavigate();
   const { show } = useToast();
   const [email, setEmail] = useState("admin@shreejigems.com");
-  const [password, setPassword] = useState("gemstone123");
+  const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [activeGem, setActiveGem] = useState<GemstoneTheme>("emerald");
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -27,15 +29,73 @@ export default function Login() {
 
   return (
     <div className="login-page">
-      <div className="login-left" style={{ background: "linear-gradient(135deg, #064e3b 0%, #022c22 100%)" }}>
-        <div className="login-brand-mark" style={{ background: "rgba(16, 185, 129, 0.2)", border: "2px solid #10b981", fontSize: 32 }}>
-          💎
+      <div
+        className="login-left"
+        style={{
+          background: "linear-gradient(135deg, #064e3b 0%, #022c22 100%)",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          textAlign: "center",
+        }}
+      >
+        <div style={{ marginBottom: "12px", position: "relative" }}>
+          <Gemstone3D
+            size={130}
+            theme={activeGem}
+            interactive={true}
+            autoRotateSpeed={0.015}
+            showSparkles={true}
+          />
         </div>
-        <h1 style={{ letterSpacing: "1px" }}>SHREEJI GEMS</h1>
-        <p style={{ color: "#a7f3d0" }}>
+
+        {/* 3D Gemstone Cut Switcher for Interactive Showcase */}
+        <div
+          style={{
+            display: "inline-flex",
+            gap: "6px",
+            background: "rgba(0, 0, 0, 0.35)",
+            padding: "4px 8px",
+            borderRadius: "20px",
+            border: "1px solid rgba(16, 185, 129, 0.25)",
+            marginBottom: "16px",
+          }}
+        >
+          {(
+            [
+              ["emerald", "Emerald 🟢"],
+              ["diamond", "Diamond 💎"],
+              ["ruby", "Ruby 🔴"],
+              ["sapphire", "Sapphire 🔷"],
+            ] as const
+          ).map(([themeKey, label]) => (
+            <button
+              key={themeKey}
+              type="button"
+              onClick={() => setActiveGem(themeKey)}
+              style={{
+                background: activeGem === themeKey ? "rgba(16, 185, 129, 0.3)" : "transparent",
+                color: activeGem === themeKey ? "#34d399" : "#94a3b8",
+                border: activeGem === themeKey ? "1px solid #10b981" : "1px solid transparent",
+                borderRadius: "14px",
+                fontSize: "11px",
+                fontWeight: 600,
+                padding: "3px 8px",
+                cursor: "pointer",
+                transition: "all 0.2s ease",
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <h1 style={{ letterSpacing: "1.5px", margin: "0 0 6px 0", fontSize: "28px" }}>SHREEJI GEMS</h1>
+        <p style={{ color: "#a7f3d0", fontSize: "14px", margin: "0 0 20px 0" }}>
           Gemstones CRM, Packet Inventory &amp; Business Intelligence Master
         </p>
-        <div className="login-features">
+
+        <div className="login-features" style={{ width: "100%", textAlign: "left" }}>
           {[
             ["📦", "Packet Inventory (ex/1, ex/2... with Carats, Pcs, MM size)"],
             ["🏷️", "QR Code Generation & Print Labels for Each Packet"],
@@ -53,6 +113,7 @@ export default function Login() {
           ))}
         </div>
       </div>
+
       <div className="login-right">
         <form className="login-form-box" onSubmit={submit}>
           <h2>Unlock Vault 💎</h2>
@@ -75,14 +136,20 @@ export default function Login() {
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="Enter password"
+                placeholder="Enter vault passcode"
+                autoFocus
+                required
               />
             </div>
             <button
               className="btn btn-primary w-full"
               type="submit"
               disabled={loading}
-              style={{ marginTop: "var(--s2)", padding: "12px", background: "linear-gradient(135deg, #10b981 0%, #059669 100%)" }}
+              style={{
+                marginTop: "var(--s2)",
+                padding: "12px",
+                background: "linear-gradient(135deg, #10b981 0%, #059669 100%)",
+              }}
             >
               {loading ? "Unlocking…" : "Unlock Local Vault →"}
             </button>
@@ -95,7 +162,7 @@ export default function Login() {
               color: "var(--text)",
             }}
           >
-            <strong>Air-Gapped Local Mode:</strong> Click "Unlock Local Vault" with any credentials to enter your local database. No cloud accounts needed.
+            <strong>Air-Gapped Local Vault:</strong> All gemstone data is stored 100% locally on this machine. Enter your vault passcode to continue.
           </div>
         </form>
       </div>

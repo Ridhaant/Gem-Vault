@@ -37,23 +37,109 @@ export type GemShape = (typeof DEFAULT_SHAPES)[number] | string;
 
 export const DEFAULT_VARIETIES = [
   "Emerald",
+  "Emerald (Zambian)",
+  "Emerald (Colombian)",
+  "Emerald (Panjshir / Afghan)",
+  "Emerald (Russian / Ural)",
+  "Emerald (Brazilian)",
+  "Emerald (Ethiopian)",
+  "Emerald Cat's Eye",
+  "Trapiche Emerald",
   "Ruby",
+  "Ruby (Burmese Pigeon Blood)",
+  "Ruby (Mozambique)",
+  "Ruby (Madagascar)",
+  "Ruby (Thai / Siamese)",
+  "Ruby (Ceylon / Sri Lanka)",
+  "Star Ruby (Natural Unheated)",
   "Blue Sapphire",
+  "Blue Sapphire (Ceylon Royal Blue)",
+  "Blue Sapphire (Ceylon Cornflower)",
+  "Blue Sapphire (Kashmir Velvet)",
+  "Blue Sapphire (Burmese)",
+  "Blue Sapphire (Madagascar)",
   "Yellow Sapphire",
+  "Yellow Sapphire (Ceylon Pukhraj)",
+  "Yellow Sapphire (Bangkok)",
   "Pink Sapphire",
+  "Pink Sapphire (Ceylon)",
+  "Pink Sapphire (Madagascar)",
   "White Sapphire",
+  "Padparadscha Sapphire (Natural Lotus)",
+  "Green Sapphire",
+  "Purple / Violet Sapphire",
+  "Star Sapphire (Natural Asterism)",
+  "Color-Change Sapphire",
   "Diamond",
+  "Diamond Solitaire",
+  "Diamond Melee Parcel",
+  "Diamond (Fancy Yellow)",
+  "Diamond (Fancy Pink)",
+  "Diamond (Fancy Blue)",
   "Tanzanite",
+  "Tanzanite (Merelani AAA Royal Blue)",
   "Aquamarine",
+  "Aquamarine (Santa Maria Deep Blue)",
+  "Morganite (Peach / Pink Beryl)",
+  "Heliodor (Golden Beryl)",
+  "Bixbite (Red Beryl)",
+  "Goshenite (White Beryl)",
   "Spinel",
+  "Red Spinel (Burmese / Mahenge)",
+  "Hot Pink / Neon Spinel (Mahenge)",
+  "Cobalt Blue Spinel (Luc Yen)",
+  "Purple / Violet Spinel",
+  "Black Spinel",
   "Tourmaline",
+  "Paraiba Tourmaline (Neon Blue)",
+  "Rubellite (Pigeon Blood / Raspberry)",
+  "Indicolite (Blue Tourmaline)",
+  "Chrome Tourmaline (Vivid Green)",
+  "Bi-Color / Watermelon Tourmaline",
+  "Yellow / Canary Tourmaline",
   "Garnet / Tsavorite",
+  "Tsavorite Garnet (Vivid Green)",
+  "Demantoid Garnet (Russian Horsetail)",
+  "Spessartite / Mandarin Garnet",
+  "Rhodolite Garnet (Purplish Red)",
+  "Hessonite Garnet (Ceylon Gomedh)",
   "Alexandrite",
+  "Alexandrite (Color Change)",
+  "Chrysoberyl Cat's Eye (Lehsunia)",
   "Opal",
-  "Peridot",
-  "Amethyst",
+  "Opal (Australian Black)",
+  "Opal (Australian White / Crystal)",
+  "Opal (Australian Boulder)",
+  "Fire Opal (Mexican Sun Color)",
+  "Opal (Ethiopian Welo Hydrophane)",
   "Topaz",
+  "Imperial Topaz (Natural Golden Sherry)",
+  "Swiss Blue Topaz",
+  "London Blue Topaz",
+  "Peridot",
+  "Peridot (Burmese / Pakistani Suppat)",
+  "Zircon (Blue Cambodian Ratanakiri)",
+  "Zircon (Natural White Starlite)",
+  "Amethyst",
+  "Citrine",
+  "Ametrine",
+  "Rose Quartz",
+  "Smoky Quartz",
+  "Rutilated Quartz",
   "Pearl",
+  "Natural Basra Pearl",
+  "South Sea Pearl (Golden / White)",
+  "Tahitian Black Pearl",
+  "Cultured Pearl (Japanese Akoya)",
+  "Red Coral (Italian Moonga)",
+  "Turquoise (Persian Neyshabur)",
+  "Lapis Lazuli (Badakhshan Afghan Royal)",
+  "Natural Baltic Amber",
+  "Imperial Jadeite (Type A Jade)",
+  "Moonstone (Rainbow / Ceylon Blue Sheen)",
+  "Sunstone (Oregon Schiller)",
+  "Iolite (Neeli - Water Sapphire)",
+  "Kunzite (Spodumene)",
 ] as const;
 
 export type GemVariety = (typeof DEFAULT_VARIETIES)[number] | string;
@@ -64,6 +150,14 @@ export interface GemBox {
   description?: string;
   color?: string;
   created_at: string;
+  packet_count?: number;
+  total_pcs?: number;
+  total_weight?: number;
+  initial_pcs?: number;
+  initial_weight?: number;
+  cost_valuation?: number;
+  asking_valuation?: number;
+  in_stock_count?: number;
 }
 
 export interface GemStoneDetail {
@@ -73,6 +167,7 @@ export interface GemStoneDetail {
   weight: number; // Carats
   mm_size?: string; // e.g. "8.2 x 6.4 mm"
   notes?: string;
+  status?: "in_stock" | "sold" | "on_approval";
 }
 
 export interface GemSubItem {
@@ -95,6 +190,10 @@ export interface GemPacket {
   weight: number; // Carats (cts) or Grams (g)
   unit: WeightUnit; // "cts" | "g"
   pieces: number; // Number of pieces (pcs)
+  initial_weight?: number; // Original intake weight prior to partial sales
+  initial_pieces?: number; // Original intake pieces prior to partial sales
+  is_uncountable?: boolean; // Packets with multiple pieces that are uncountable (weight-based only)
+  stone_category?: "bulk" | "no_individual_weight" | "individual_weight_added"; // Explicit 3-tier categorization
   stone_weight?: number; // Weight per stone for grouping (e.g. 0.50 cts each)
   stone_weights?: number[]; // Individual distribution of weight per stone (e.g. [0.55, 0.48, 0.60])
   stone_details?: GemStoneDetail[]; // Individual rich stone customization: variety, shape, weight, mm_size, notes
@@ -154,6 +253,11 @@ export interface GemPacket {
   // Multi-stone parcel / mixed box itemized breakdown
   sub_gems?: GemSubItem[];
 
+  // Concurrency & Domain
+  version_id?: number;
+  ownership_type?: string;
+  treatment_status?: string;
+
   created_at: string;
   updated_at: string;
 }
@@ -166,6 +270,7 @@ export interface GemSaleItem {
   weight: number;
   unit: WeightUnit;
   pieces: number;
+  is_uncountable?: boolean;
   stone_weight?: number;
   stone_weights?: number[]; // Individual distribution of weight per stone
   stone_details?: GemStoneDetail[]; // Individual rich stone customization
@@ -269,6 +374,18 @@ export interface GemBrokerage {
   commission_from?: "buyer" | "seller" | "both";
   
   settlement_status: "received" | "pending" | "partial";
+  deal_settlement_status?: "pending_both" | "paid_seller_pending_buyer" | "paid_buyer_pending_seller" | "fully_settled" | "partial_settled";
+  amount_paid_to_seller?: number;
+  date_paid_to_seller?: string;
+  mode_paid_to_seller?: string;
+  note_paid_to_seller?: string;
+  amount_received_from_buyer?: number;
+  date_received_from_buyer?: string;
+  mode_received_from_buyer?: string;
+  note_received_from_buyer?: string;
+  seller_payments?: GemSalePayment[];
+  buyer_payments?: GemSalePayment[];
+  commission_payments?: GemSalePayment[];
   received_amount: number;
   balance_receivable: number; // Pending commission
   settlement_date?: string;
@@ -285,6 +402,8 @@ export interface GemPurchaseItem {
   weight: number;
   unit: WeightUnit;
   pieces: number;
+  is_uncountable?: boolean;
+  stone_category?: "bulk" | "no_individual_weight" | "individual_weight_added";
   stone_weight?: number;
   stone_weights?: number[]; // Individual distribution of weight per stone
   stone_details?: GemStoneDetail[]; // Individual rich stone customization
@@ -328,6 +447,12 @@ export interface GemPurchase {
   brokerage_rate?: number;
   brokerage_amount?: number;
   brokerage_paid?: boolean;
+  brokerage_paid_amount?: number;
+  brokerage_balance_due?: number;
+  broker_payments?: GemSalePayment[];
+  status?: "active" | "cancelled";
+  cancelled_date?: string;
+  cancelled_reason?: string;
   notes?: string;
   created_at: string;
 }
@@ -378,3 +503,64 @@ export interface GstSettings {
   jewellery_hsn: string; // e.g. "7113"
   enable_gst_by_default: boolean;
 }
+
+export interface SaleLedgerItem {
+  id: string;
+  transaction_type: "direct_sale" | "brokerage_deal";
+  invoice_or_deal_no: string;
+  date: string;
+  company_name: string;
+  buyer_name: string;
+  seller_name?: string;
+  particulars_summary: string;
+  weight: number;
+  unit: WeightUnit | string;
+  pieces: number;
+  sale_amount: number; // Invoiced total or Deal value
+  cogs_amount: number; // Purchase cost or Sourced price
+  gross_profit: number; // Sale amount - COGS
+  margin_pct: number;
+  paid_amount: number; // Received from buyer
+  balance_due: number; // Accounts Receivable from buyer
+  payment_status: "cleared" | "partial" | "unpaid";
+  payment_mode?: string;
+  notes?: string;
+  items_count: number;
+}
+
+export interface BalanceSheetData {
+  as_of_date: string;
+  assets: {
+    current_assets: {
+      liquid_cash: number;
+      accounts_receivable_direct_sales: number;
+      accounts_receivable_brokerage_deals: number;
+      pending_brokerage_commissions: number;
+      total_accounts_receivable: number;
+      inventory_at_cost: number;
+      total_current_assets: number;
+    };
+    fixed_assets: {
+      items: Array<{ id: string; name: string; category: string; valuation: number }>;
+      total_fixed_assets: number;
+    };
+    inventory_at_market: number;
+    unrealized_inventory_appreciation: number;
+    total_assets: number;
+  };
+  liabilities: {
+    current_liabilities: {
+      accounts_payable_suppliers: number;
+      brokerage_payable_purchase_brokers: number;
+      brokerage_payable_deal_sellers: number;
+      total_current_liabilities: number;
+    };
+    total_liabilities: number;
+  };
+  equity: {
+    net_worth: number; // Total Assets - Total Liabilities
+    working_capital: number; // Current Assets - Current Liabilities
+    current_ratio: number;
+  };
+}
+

@@ -79,6 +79,50 @@ export function parseParticularsVariety(
 }
 
 /**
+ * Determines whether a packet has genuine, pre-entered individual stone weights.
+ * - Single-stone packets (pieces === 1, weight > 0) have genuine entered weight.
+ * - Multi-stone packets have genuine weights ONLY if stone_weights is explicitly provided with positive values,
+ *   sub_gems has stones with positive weights, or stone_details has diverse/explicitly-entered positive weights.
+ * - Multi-stone boxes/parcels without individual stone weights are unweighted (unknown weights per stone).
+ */
+export function hasGenuineIndividualWeights(pkt: GemPacket | null | undefined): boolean {
+  if (!pkt || pkt.is_uncountable) return false;
+  const pcs = Number(pkt.pieces) || 0;
+  if (pcs === 1 && Number(pkt.weight) > 0) return true;
+  if (pcs <= 1) return false;
+
+  // Multi-stone packets:
+  // Must have a complete list of positive individual weights for all pieces in the packet.
+  if (Array.isArray(pkt.stone_weights) && pkt.stone_weights.length >= pcs && pkt.stone_weights.every((w) => Number(w) > 0)) {
+    const nonZero = pkt.stone_weights.filter((w) => Number(w) > 0);
+    const min = Math.min(...nonZero);
+    const max = Math.max(...nonZero);
+    if (max - min < 0.005) {
+      const totalWt = Number(pkt.weight) || 0;
+      const totalPcs = Number(pkt.pieces) || nonZero.length;
+      if (totalPcs > 1 && totalWt > 0 && Math.abs(nonZero[0] - totalWt / totalPcs) < 0.01) {
+        return false;
+      }
+    }
+    return true;
+  }
+  if (Array.isArray(pkt.sub_gems) && pkt.sub_gems.length >= pcs && pkt.sub_gems.every((sg) => Number(sg.weight) > 0)) {
+    return true;
+  }
+  if (Array.isArray(pkt.stone_details) && pkt.stone_details.length >= pcs) {
+    const inStock = pkt.stone_details.filter((s) => s.status !== "sold");
+    // All in-stock stones must have a distinct positive weight, not placeholders or zeroes
+    if (inStock.length > 0 && inStock.every((s) => Number(s.weight) > 0)) {
+      const weights = inStock.map((s) => Number(s.weight));
+      const min = Math.min(...weights);
+      const max = Math.max(...weights);
+      if (max - min > 0.02) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Resolves the inventory/sales status for each individual stone in packet.stone_details (or stone_weights).
  * Accurately tracks which stones are in stock vs sold / on approval in past transactions,
  * or currently allocated in the active invoice form.
@@ -97,41 +141,23 @@ export function resolvePacketStoneStatuses(
   const details = Array.isArray(packet.stone_details) ? packet.stone_details : [];
   const weights = Array.isArray(packet.stone_weights) ? packet.stone_weights : [];
 
+  // Check if packet has genuine individual stone weights
+  const hasGenuineWeights = hasGenuineIndividualWeights(packet);
+  if (!hasGenuineWeights) {
+    // For packets with no individual stone weights (or all weights 0), do not synthesize dummy 0.00 ct stone cards
+    return [];
+  }
+
   let rawStones: any[] = [];
-  if (details.length >= weights.length && details.length > 0) {
+  if (details.length > 0) {
+    // stone_details is always authoritative if defined
     rawStones = details.map((d, i) => ({ ...d, id: d.id || `st-${i + 1}` }));
   } else if (weights.length > 0) {
-    // If weights array has more items than details (e.g. details was previously truncated),
-    // retain known details and synthesize the remainder from weights
-    rawStones = weights.map((wt, i) => {
-      if (details[i]) {
-        return {
-          id: details[i].id || `st-${i + 1}`,
-          variety: details[i].variety || packet.particulars,
-          shape: details[i].shape || packet.shape || "Oval",
-          weight: details[i].weight ?? wt,
-          mm_size: details[i].mm_size || packet.mm_size || "",
-          notes: details[i].notes || "",
-        };
-      }
-      return {
-        id: `st-${i + 1}`,
-        variety: packet.particulars,
-        shape: packet.shape || "Oval",
-        weight: Number(wt) || 0,
-        mm_size: packet.mm_size || "",
-        notes: "",
-      };
-    });
-  } else if (details.length > 0) {
-    rawStones = details.map((d, i) => ({ ...d, id: d.id || `st-${i + 1}` }));
-  } else if (typeof packet.pieces === "number" && packet.pieces > 0) {
-    const singleWt = packet.stone_weight || (packet.weight ? Number((packet.weight / packet.pieces).toFixed(2)) : 0);
-    rawStones = Array.from({ length: packet.pieces }, (_, i) => ({
+    rawStones = weights.map((wt, i) => ({
       id: `st-${i + 1}`,
       variety: packet.particulars,
       shape: packet.shape || "Oval",
-      weight: singleWt,
+      weight: Number(wt) || 0,
       mm_size: packet.mm_size || "",
       notes: "",
     }));
@@ -331,11 +357,30 @@ export function resolvePacketStoneStatuses(
     const pcs = Number(se.item.pieces) || 1;
     let count = 0;
     const parsedDesc = parseParticularsVariety(se.item.particulars, se.item.shape || packet.shape);
+    const itemWt = Number(se.item.weight_taken) > 0
+      ? Number(se.item.weight_taken)
+      : (Number(se.item.weight) > 0 ? Number(se.item.weight) : 0);
 
     for (const r of results) {
       if (r.status === "in_stock") {
         const isAppr = se.sale.is_approval && se.sale.approval_status !== "approved_billed";
         r.status = isAppr ? "on_approval" : "sold";
+        const allocatedWt = r.weight > 0
+          ? r.weight
+          : (pcs > 1
+              ? Number((itemWt / pcs).toFixed(2))
+              : (itemWt > 0
+                  ? itemWt
+                  : 0));
+        if (r.weight === 0 && allocatedWt > 0) {
+          r.weight = allocatedWt;
+        }
+        const unitRate = Number(se.item.rate_per_unit) > 0
+          ? Number(se.item.rate_per_unit)
+          : (allocatedWt > 0 && Number(se.item.total_price) > 0
+              ? Math.round(Number(se.item.total_price) / (itemWt || allocatedWt))
+              : (packet.sale_rate_per_unit || 0));
+
         r.saleRef = {
           invoice_no: se.sale.invoice_no,
           buyer_name: se.sale.buyer_name,
@@ -343,9 +388,9 @@ export function resolvePacketStoneStatuses(
           is_approval: se.sale.is_approval,
           approval_status: se.sale.approval_status,
           pieces: 1,
-          weight: r.weight,
-          rate_per_unit: se.item.rate_per_unit,
-          total_price: Math.round((Number(se.item.rate_per_unit) || 0) * (r.weight || 0)),
+          weight: allocatedWt,
+          rate_per_unit: unitRate,
+          total_price: Number(se.item.total_price) ? (pcs > 1 ? Math.round(Number(se.item.total_price) / pcs) : Number(se.item.total_price)) : Math.round(unitRate * allocatedWt),
         };
         // Auto-heal stone variety from sale record if currently generic
         if (isGenericVariety(r.variety, packet.particulars) && !isGenericVariety(parsedDesc.variety, packet.particulars)) {
@@ -405,24 +450,6 @@ export function resolvePacketStoneStatuses(
             date: packet.memo_date || "",
             is_approval: true,
           };
-        }
-      }
-    }
-  } else if (typeof packet.pieces === "number" && packet.pieces >= 0) {
-    // If the packet has remaining stock pieces specified and there are more in_stock stones than pieces,
-    // clamp excess stones so the count of in_stock stones strictly equals packet.pieces
-    const inStockList = results.filter((r) => r.status === "in_stock");
-    let excessCount = inStockList.length - packet.pieces;
-    if (excessCount > 0) {
-      for (const r of results) {
-        if (r.status === "in_stock" && excessCount > 0) {
-          r.status = "sold";
-          r.saleRef = r.saleRef || {
-            invoice_no: "Past Sale",
-            buyer_name: "Previous Buyer",
-            date: "",
-          };
-          excessCount--;
         }
       }
     }
@@ -510,7 +537,12 @@ export function getPacketSalesHistoryWithStones(
     if (sale.approval_status === "returned") continue;
     if (!Array.isArray(sale.items)) continue;
     for (const item of sale.items) {
-      if (item.is_returned || (Number(item.pieces) === 0 && Number(item.weight) === 0)) continue;
+      if (item.is_returned) continue;
+      const pTaken = item.pieces_taken !== undefined ? Number(item.pieces_taken) : Number(item.pieces);
+      const wTaken = item.weight_taken !== undefined ? Number(item.weight_taken) : Number(item.weight);
+      if (sale.approval_status === "approved_billed" && pTaken === 0 && wTaken === 0) continue;
+      if (!sale.is_approval && Number(item.pieces) === 0 && Number(item.weight) === 0) continue;
+
       if (
         (item.packet_id && item.packet_id === packet.id) ||
         (item.packet_number && item.packet_number.toLowerCase() === packet.packet_number.toLowerCase())
@@ -547,10 +579,10 @@ export function getPacketSalesHistoryWithStones(
           );
         }
 
-        // Priority 4: Match by any unused non-in-stock stone
+        // Priority 4: Match by unused stone with matching weight
         if (!matchedStone) {
           matchedStone = stoneStatuses.find(
-            (st) => !usedStoneIds.has(st.id) && st.status !== "in_stock"
+            (st) => !usedStoneIds.has(st.id) && (Math.abs(st.weight - Number(item.weight)) < 0.005 || st.saleRef?.invoice_no === sale.invoice_no)
           );
         }
 
@@ -561,8 +593,15 @@ export function getPacketSalesHistoryWithStones(
         // Determine specific variety & shape
         let variety = matchedStone?.variety || "";
         let shape = matchedStone?.shape || item.shape || packet.shape || "Oval";
-        const weight = matchedStone?.weight || Number(item.weight) || 0;
+        const weight = Number(item.weight_taken) > 0
+          ? Number(item.weight_taken)
+          : (Number(item.weight) > 0
+              ? Number(item.weight)
+              : (matchedStone?.saleRef?.weight || matchedStone?.weight || 0));
         const stoneNum = matchedStone?.stoneNumber;
+        if (matchedStone && matchedStone.weight === 0 && weight > 0) {
+          matchedStone.weight = weight;
+        }
 
         if (isGenericVariety(variety, packet.particulars) && item.particulars) {
           const parsed = parseParticularsVariety(item.particulars, shape);
@@ -574,24 +613,34 @@ export function getPacketSalesHistoryWithStones(
 
         let stoneDisplay = "";
         if (stoneNum && variety && !isGenericVariety(variety, packet.particulars)) {
-          stoneDisplay = `Stone #${stoneNum}: ${variety} (${shape}) - ${weight} cts`;
+          stoneDisplay = `Stone #${stoneNum}: ${variety} (${shape}) - ${weight.toFixed(2)} cts`;
         } else if (stoneNum) {
-          stoneDisplay = `Stone #${stoneNum}: ${item.particulars || packet.particulars} (${shape}) - ${weight} cts`;
+          stoneDisplay = `Stone #${stoneNum}: ${item.particulars || packet.particulars} (${shape}) - ${weight.toFixed(2)} cts`;
         } else if (item.particulars && !isGenericVariety(item.particulars, packet.particulars)) {
-          stoneDisplay = `${item.particulars} (${shape}) - ${weight} cts`;
+          stoneDisplay = `${item.particulars} (${shape}) - ${weight.toFixed(2)} cts`;
         } else {
-          stoneDisplay = `${item.pieces || 1} pc (${weight} ${item.unit || packet.unit || "cts"}) • ${variety || packet.particulars}`;
+          const pcs = item.is_uncountable ? 0 : (item.pieces !== undefined ? Number(item.pieces) : 1);
+          stoneDisplay = pcs > 0
+            ? `${pcs} ${pcs === 1 ? "pc" : "pcs"} (${weight.toFixed(2)} ${item.unit || packet.unit || "cts"}) • ${variety || packet.particulars}`
+            : `(${weight.toFixed(2)} ${item.unit || packet.unit || "cts"}) • ${variety || packet.particulars}`;
         }
+
+        const rate_per_unit = Number(item.rate_per_unit) > 0
+          ? Number(item.rate_per_unit)
+          : (matchedStone?.saleRef?.rate_per_unit || (weight > 0 && Number(item.total_price) > 0 ? Math.round(Number(item.total_price) / weight) : (packet.sale_rate_per_unit || 0)));
+
+        const total_price = Number(item.total_price) > 0
+          ? Number(item.total_price)
+          : Math.round(rate_per_unit * weight);
 
         history.push({
           date: sale.date,
           invoice_no: sale.invoice_no,
           buyer_name: sale.buyer_name,
-          pieces: Number(item.pieces) || 1,
-          weight: Number(item.weight) || 0,
-          rate_per_unit:
-            Number(item.rate_per_unit) || (item.weight ? Math.round(item.total_price / item.weight) : 0),
-          total_price: Number(item.total_price) || 0,
+          pieces: Number(item.pieces) || (item.pieces_taken !== undefined ? item.pieces_taken : 1),
+          weight: weight,
+          rate_per_unit: rate_per_unit,
+          total_price: total_price,
           is_approval: sale.is_approval,
           approval_status: sale.approval_status,
           particulars: variety || item.particulars || packet.particulars,

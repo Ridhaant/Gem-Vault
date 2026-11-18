@@ -4,7 +4,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { apiGet, apiPost, apiPut, apiDelete } from "../api";
 import { Spinner, PayBadge, EmptyState } from "../ui";
 import { formatINR, shortDate } from "../format";
-import type { GemSale, GemBrokerage } from "../types/gemstone";
+import type { GemSale, GemBrokerage, GemPacket } from "../types/gemstone";
 import { DEFAULT_COMPANIES } from "../types/gemstone";
 import { useToast } from "../toast";
 import {
@@ -12,6 +12,7 @@ import {
   printBuyerApprovalStatement,
   printBuyerWiseLedgerReport,
 } from "../statementPrint";
+import { hasGenuineIndividualWeights } from "../packetStones";
 
 export default function Sales() {
   const navigate = useNavigate();
@@ -37,10 +38,14 @@ export default function Sales() {
   const [settlingSale, setSettlingSale] = useState<GemSale | null>(null);
   const [settlementRows, setSettlementRows] = useState<
     Array<{
+      item_index?: number;
+      item_id?: string;
+      stone_id?: string;
       packet_id?: string;
       packet_number: string;
       particulars: string;
       shape: string;
+      is_uncountable?: boolean;
       original_pieces: number;
       original_weight: number;
       rate_per_unit: number;
@@ -50,6 +55,7 @@ export default function Sales() {
       weight_returned: number;
       stone_weights?: number[];
       selected_stones?: boolean[];
+      has_individual_weights?: boolean;
     }>
   >([]);
   const [settlementNotes, setSettlementNotes] = useState("");
@@ -59,9 +65,26 @@ export default function Sales() {
   const [printTakenBuyer, setPrintTakenBuyer] = useState("all");
   const [printTakenCompany, setPrintTakenCompany] = useState("all");
 
+  // Partial Payment Modal State
+  const [partialPaySale, setPartialPaySale] = useState<GemSale | null>(null);
+  const [partialPayAmount, setPartialPayAmount] = useState<number>(0);
+  const [partialPayDate, setPartialPayDate] = useState<string>("");
+  const [partialPayMode, setPartialPayMode] = useState<string>("Bank Wire / NEFT");
+  const [partialPayNote, setPartialPayNote] = useState<string>("");
+
+  // Pagination for high-volume sales datasets
+  const [currentPage, setCurrentPage] = useState(1);
+  const pageSize = 50;
+
   const { data: sales = [], isLoading } = useQuery<GemSale[]>({
     queryKey: ["sales"],
     queryFn: () => apiGet("/sales"),
+  });
+
+  const { data: packets = [] } = useQuery<GemPacket[]>({
+    queryKey: ["packets"],
+    queryFn: () => apiGet("/packets?limit=200"),
+    enabled: Boolean(settlingSale),
   });
 
   const uniqueBuyers = useMemo(() => {
@@ -101,11 +124,29 @@ export default function Sales() {
     onError: (err: any) => show("Error marking full payment: " + err.message, "error"),
   });
 
+  const addPartialPaymentMutation = useMutation({
+    mutationFn: (payload: { id: string; amount: number; mode: string; date?: string; note?: string }) =>
+      apiPost(`/sales/${payload.id}/payments`, {
+        amount: payload.amount,
+        mode: payload.mode,
+        date: payload.date,
+        note: payload.note,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["sales"] });
+      queryClient.invalidateQueries({ queryKey: ["analytics_overview"] });
+      show("Payment recorded successfully and balance updated!", "success");
+      setPartialPaySale(null);
+    },
+    onError: (err: any) => show("Error recording payment: " + err.message, "error"),
+  });
+
   const deleteSaleMutation = useMutation({
     mutationFn: (id: string) => apiDelete(`/sales/${id}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["sales"] });
       queryClient.invalidateQueries({ queryKey: ["packets"] });
+      queryClient.invalidateQueries({ queryKey: ["boxes"] });
       queryClient.invalidateQueries({ queryKey: ["analytics_overview"] });
       show("Transaction deleted and associated packets restored to vault!", "info");
     },
@@ -122,6 +163,7 @@ export default function Sales() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["sales"] });
       queryClient.invalidateQueries({ queryKey: ["packets"] });
+      queryClient.invalidateQueries({ queryKey: ["boxes"] });
       queryClient.invalidateQueries({ queryKey: ["analytics_overview"] });
       show(
         "Approval memo settled! Taken stones converted to confirmed sale, and returned stones restored to vault inventory.",
@@ -132,45 +174,86 @@ export default function Sales() {
     onError: (err: any) => show("Error settling approval memo: " + err.message, "error"),
   });
 
+  // Action mutation: Convert Commercial Sale to Active Approval Memo
+  const convertSaleMutation = useMutation({
+    mutationFn: (payload: { saleId: string; notes?: string }) =>
+      apiPost(`/sales/${payload.saleId}/convert-to-approval`, {
+        options: { notes: payload.notes },
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["sales"] });
+      queryClient.invalidateQueries({ queryKey: ["packets"] });
+      queryClient.invalidateQueries({ queryKey: ["boxes"] });
+      queryClient.invalidateQueries({ queryKey: ["analytics_overview"] });
+      show("Commercial sale converted to approval memo! Associated packets restored to 'on_approval' status.", "success");
+    },
+    onError: (err: any) => show("Error converting sale to approval memo: " + err.message, "error"),
+  });
+
   const openSettlementDialog = (sale: GemSale, initialMode: "approve" | "return") => {
     setSettlingSale(sale);
-    const rows = (sale.items || []).map((it) => {
-      const origPcs = it.pieces || 1;
-      const origWt = it.weight || 0;
+    const rows = (sale.items || []).map((it, itIdx) => {
+      const pkt = packets.find(
+        (p) =>
+          (it.packet_id && p.id === it.packet_id) ||
+          p.packet_number.toLowerCase() === (it.packet_number || "").toLowerCase()
+      );
+      const isUnc = Boolean(it.is_uncountable || pkt?.is_uncountable);
+      const origPcs = isUnc ? 0 : (it.pieces !== undefined ? it.pieces : 0);
+      const origWt = it.original_weight !== undefined && it.original_weight > 0 ? it.original_weight : (it.weight || 0);
       const isApprove = initialMode === "approve";
 
-      // Extract individual stone weights if present, or split evenly
+      // Detect genuine individual stone weights:
       let sWeights: number[] = [];
-      if (Array.isArray(it.stone_weights) && it.stone_weights.length > 0) {
-        sWeights = [...it.stone_weights];
-      } else if (origPcs > 1 && origWt > 0) {
-        const avg = Number((origWt / origPcs).toFixed(3));
-        sWeights = Array(origPcs).fill(avg);
-      } else {
-        sWeights = [origWt];
-      }
-      while (sWeights.length < origPcs) {
-        sWeights.push(origWt > 0 ? Number((origWt / origPcs).toFixed(3)) : 0);
-      }
-      sWeights = sWeights.slice(0, origPcs);
+      let rowHasIndividualWeights = false;
 
-      // Selected stones array: true = taken for sale, false = returned
-      const selectedStones = Array(origPcs).fill(isApprove);
+      if (!isUnc && origPcs > 1) {
+        if (
+          Array.isArray(it.stone_weights) &&
+          it.stone_weights.length === origPcs &&
+          Math.abs(it.stone_weights.reduce((a, b) => a + b, 0) - origWt) <= 0.05
+        ) {
+          sWeights = [...it.stone_weights];
+          rowHasIndividualWeights = true;
+        } else if (pkt && hasGenuineIndividualWeights(pkt) && Array.isArray(pkt.stone_details) && pkt.stone_details.length >= origPcs) {
+          const withWts = pkt.stone_details.filter((sd) => sd.weight && sd.weight > 0);
+          if (withWts.length >= origPcs) {
+            sWeights = withWts.slice(0, origPcs).map((sd) => sd.weight!);
+            rowHasIndividualWeights = true;
+          }
+        }
+      } else if (!isUnc && origPcs === 1) {
+        sWeights = [origWt];
+        rowHasIndividualWeights = false;
+      }
+
+      // Selected stones array: true = taken for sale (billed), false = returned to vault
+      const selectedStones = isUnc || (!rowHasIndividualWeights && origPcs > 1)
+        ? []
+        : Array(origPcs).fill(isApprove);
+
+      const initWeightTaken = isApprove ? origWt : 0;
+      const initWeightReturned = isApprove ? 0 : origWt;
 
       return {
+        item_index: itIdx,
+        item_id: (it as any).id || it.stone_id || `item-${itIdx}`,
+        stone_id: it.stone_id,
         packet_id: it.packet_id,
         packet_number: it.packet_number,
         particulars: it.particulars,
         shape: it.shape,
+        is_uncountable: isUnc,
         original_pieces: origPcs,
         original_weight: origWt,
         rate_per_unit: it.rate_per_unit || (origWt ? Math.round(it.total_price / origWt) : 0),
-        pieces_taken: isApprove ? origPcs : 0,
-        weight_taken: isApprove ? origWt : 0,
-        pieces_returned: isApprove ? 0 : origPcs,
-        weight_returned: isApprove ? 0 : origWt,
+        pieces_taken: isUnc ? 0 : (isApprove ? origPcs : 0),
+        weight_taken: initWeightTaken,
+        pieces_returned: isUnc ? 0 : (isApprove ? 0 : origPcs),
+        weight_returned: initWeightReturned,
         stone_weights: sWeights,
         selected_stones: selectedStones,
+        has_individual_weights: rowHasIndividualWeights,
       };
     });
     setSettlementRows(rows);
@@ -178,6 +261,24 @@ export default function Sales() {
       initialMode === "approve"
         ? "Client took and confirmed gemstone packet(s)"
         : "Client returned stones back to vault"
+    );
+  };
+
+  const handleToggleSingleStone = (rowIdx: number) => {
+    setSettlementRows((prev) =>
+      prev.map((row, i) => {
+        if (i !== rowIdx) return row;
+        const currentlyTaken = row.pieces_taken > 0;
+        const newTaken = !currentlyTaken;
+        return {
+          ...row,
+          pieces_taken: newTaken ? 1 : 0,
+          weight_taken: newTaken ? row.original_weight : 0,
+          pieces_returned: newTaken ? 0 : 1,
+          weight_returned: newTaken ? 0 : row.original_weight,
+          selected_stones: [newTaken],
+        };
+      })
     );
   };
 
@@ -198,7 +299,7 @@ export default function Sales() {
         let wRet = 0;
 
         for (let k = 0; k < row.original_pieces; k++) {
-          const w = sWeights[k] !== undefined ? sWeights[k] : (row.original_pieces > 0 ? row.original_weight / row.original_pieces : 0);
+          const w = (sWeights[k] !== undefined && sWeights[k] > 0) ? sWeights[k] : (row.original_pieces > 0 ? row.original_weight / row.original_pieces : 0);
           if (currentSel[k]) {
             pTaken++;
             wTaken += w;
@@ -209,7 +310,7 @@ export default function Sales() {
         }
 
         wTaken = Number(wTaken.toFixed(2));
-        wRet = Number(Math.max(0, row.original_weight - wTaken).toFixed(2));
+        wRet = Number(wRet.toFixed(2));
 
         return {
           ...row,
@@ -231,41 +332,110 @@ export default function Sales() {
     setSettlementRows((prev) =>
       prev.map((row, i) => {
         if (i !== idx) return row;
-        const updated = { ...row, [field]: val };
 
+        // Single piece stone: strictly binary whole stone taken or returned.
+        // No partial carats can be taken or returned without a piece.
+        if (!row.is_uncountable && row.original_pieces === 1) {
+          if (field === "pieces_taken") {
+            const pt = val > 0 ? 1 : 0;
+            return {
+              ...row,
+              pieces_taken: pt,
+              weight_taken: pt === 1 ? row.original_weight : 0,
+              pieces_returned: pt === 1 ? 0 : 1,
+              weight_returned: pt === 1 ? 0 : row.original_weight,
+              selected_stones: [pt === 1],
+            };
+          } else if (field === "pieces_returned") {
+            const pr = val > 0 ? 1 : 0;
+            return {
+              ...row,
+              pieces_returned: pr,
+              weight_returned: pr === 1 ? row.original_weight : 0,
+              pieces_taken: pr === 1 ? 0 : 1,
+              weight_taken: pr === 1 ? 0 : row.original_weight,
+              selected_stones: [pr === 0],
+            };
+          }
+          return row;
+        }
+
+        const updated = { ...row };
+
+        // Bulk parcel (uncountable lot): pieces are not tracked, carats freely balanced.
+        if (row.is_uncountable) {
+          if (field === "weight_taken") {
+            const wt = Math.min(row.original_weight, Math.max(0, val));
+            updated.weight_taken = Number(wt.toFixed(2));
+            updated.weight_returned = Number(Math.max(0, row.original_weight - wt).toFixed(2));
+          } else if (field === "weight_returned") {
+            const wr = Math.min(row.original_weight, Math.max(0, val));
+            updated.weight_returned = Number(wr.toFixed(2));
+            updated.weight_taken = Number(Math.max(0, row.original_weight - wr).toFixed(2));
+          }
+          updated.pieces_taken = 0;
+          updated.pieces_returned = 0;
+          return updated;
+        }
+
+        // Multi-piece unweighted lot (row.original_pieces > 1)
         if (field === "pieces_taken") {
           const pt = Math.min(row.original_pieces, Math.max(0, val));
           updated.pieces_taken = pt;
-          updated.pieces_returned = row.original_pieces - pt;
-          if (row.original_pieces > 0) {
-            const wtTaken = Number(((row.original_weight / row.original_pieces) * pt).toFixed(2));
-            updated.weight_taken = wtTaken;
-            updated.weight_returned = Number(Math.max(0, row.original_weight - wtTaken).toFixed(2));
-          }
-          // sync selection flags
-          if (row.selected_stones) {
-            updated.selected_stones = row.selected_stones.map((_, sIdx) => sIdx < pt);
+          const pr = row.original_pieces - pt;
+          updated.pieces_returned = pr;
+          if (pt === 0) {
+            updated.weight_taken = 0;
+            updated.weight_returned = row.original_weight;
+          } else if (pt === row.original_pieces) {
+            updated.weight_taken = row.original_weight;
+            updated.weight_returned = 0;
+          } else {
+            const propWt = Number(((row.original_weight / row.original_pieces) * pt).toFixed(2));
+            updated.weight_taken = propWt;
+            updated.weight_returned = Number((row.original_weight - propWt).toFixed(2));
           }
         } else if (field === "pieces_returned") {
           const pr = Math.min(row.original_pieces, Math.max(0, val));
           updated.pieces_returned = pr;
-          updated.pieces_taken = row.original_pieces - pr;
-          if (row.original_pieces > 0) {
-            const wtRet = Number(((row.original_weight / row.original_pieces) * pr).toFixed(2));
-            updated.weight_returned = wtRet;
-            updated.weight_taken = Number(Math.max(0, row.original_weight - wtRet).toFixed(2));
-          }
-          if (row.selected_stones) {
-            updated.selected_stones = row.selected_stones.map((_, sIdx) => sIdx >= pr);
+          const pt = row.original_pieces - pr;
+          updated.pieces_taken = pt;
+          if (pr === 0) {
+            updated.weight_returned = 0;
+            updated.weight_taken = row.original_weight;
+          } else if (pr === row.original_pieces) {
+            updated.weight_returned = row.original_weight;
+            updated.weight_taken = 0;
+          } else {
+            const propWt = Number(((row.original_weight / row.original_pieces) * pr).toFixed(2));
+            updated.weight_returned = propWt;
+            updated.weight_taken = Number((row.original_weight - propWt).toFixed(2));
           }
         } else if (field === "weight_taken") {
-          const wt = Math.min(row.original_weight, Math.max(0, val));
-          updated.weight_taken = wt;
-          updated.weight_returned = Number(Math.max(0, row.original_weight - wt).toFixed(2));
+          if (row.pieces_taken === 0) {
+            updated.weight_taken = 0;
+            updated.weight_returned = row.original_weight;
+          } else if (row.pieces_returned === 0) {
+            updated.weight_taken = row.original_weight;
+            updated.weight_returned = 0;
+          } else {
+            const wt = Math.min(row.original_weight - 0.01, Math.max(0.01, val));
+            updated.weight_taken = Number(wt.toFixed(2));
+            updated.weight_returned = Number((row.original_weight - wt).toFixed(2));
+          }
         } else if (field === "weight_returned") {
-          const wr = Math.min(row.original_weight, Math.max(0, val));
-          updated.weight_returned = wr;
-          updated.weight_taken = Number(Math.max(0, row.original_weight - wr).toFixed(2));
+          if (row.pieces_returned === 0) {
+            // Cannot return carats without a piece!
+            updated.weight_returned = 0;
+            updated.weight_taken = row.original_weight;
+          } else if (row.pieces_taken === 0) {
+            updated.weight_returned = row.original_weight;
+            updated.weight_taken = 0;
+          } else {
+            const wr = Math.min(row.original_weight - 0.01, Math.max(0.01, val));
+            updated.weight_returned = Number(wr.toFixed(2));
+            updated.weight_taken = Number((row.original_weight - wr).toFixed(2));
+          }
         }
 
         return updated;
@@ -273,16 +443,36 @@ export default function Sales() {
     );
   };
 
+  const handleSetRowQuickAll = (rowIdx: number, mode: "take_all" | "return_all") => {
+    setSettlementRows((prev) =>
+      prev.map((r, i) => {
+        if (i !== rowIdx) return r;
+        const isUnc = Boolean(r.is_uncountable);
+        return {
+          ...r,
+          pieces_taken: isUnc ? 0 : (mode === "take_all" ? r.original_pieces : 0),
+          weight_taken: mode === "take_all" ? r.original_weight : 0,
+          pieces_returned: isUnc ? 0 : (mode === "take_all" ? 0 : r.original_pieces),
+          weight_returned: mode === "take_all" ? 0 : r.original_weight,
+          selected_stones: isUnc ? [] : Array(r.original_pieces).fill(mode === "take_all"),
+        };
+      })
+    );
+  };
+
   const handleSetAllSettlement = (mode: "take_all" | "return_all") => {
     setSettlementRows((prev) =>
-      prev.map((r) => ({
-        ...r,
-        pieces_taken: mode === "take_all" ? r.original_pieces : 0,
-        weight_taken: mode === "take_all" ? r.original_weight : 0,
-        pieces_returned: mode === "take_all" ? 0 : r.original_pieces,
-        weight_returned: mode === "take_all" ? 0 : r.original_weight,
-        selected_stones: Array(r.original_pieces).fill(mode === "take_all"),
-      }))
+      prev.map((r) => {
+        const isUnc = Boolean(r.is_uncountable);
+        return {
+          ...r,
+          pieces_taken: isUnc ? 0 : (mode === "take_all" ? r.original_pieces : 0),
+          weight_taken: mode === "take_all" ? r.original_weight : 0,
+          pieces_returned: isUnc ? 0 : (mode === "take_all" ? 0 : r.original_pieces),
+          weight_returned: mode === "take_all" ? 0 : r.original_weight,
+          selected_stones: isUnc ? [] : Array(r.original_pieces).fill(mode === "take_all"),
+        };
+      })
     );
   };
 
@@ -291,14 +481,14 @@ export default function Sales() {
 
     // Section view filter
     if (viewSection === "sales") {
-      result = result.filter((s) => !s.is_approval || s.approval_status === "approved_billed");
+      result = result.filter((s) => (!s.is_approval && s.approval_status !== "pending") || s.approval_status === "approved_billed");
     } else if (viewSection === "approvals") {
       if (approvalSubFilter === "left") {
-        result = result.filter((s) => s.is_approval && s.approval_status !== "approved_billed" && s.approval_status !== "returned");
+        result = result.filter((s) => (s.is_approval || s.approval_status === "pending") && s.approval_status !== "approved_billed" && s.approval_status !== "returned");
       } else if (approvalSubFilter === "taken") {
         result = result.filter((s) => s.approval_status === "approved_billed" || Boolean(s.approval_billed_date));
       } else {
-        result = result.filter((s) => s.is_approval || s.approval_status === "approved_billed");
+        result = result.filter((s) => s.is_approval || s.approval_status === "pending" || s.approval_status === "approved_billed");
       }
     }
 
@@ -351,6 +541,16 @@ export default function Sales() {
     return result.sort((a, b) => b.date.localeCompare(a.date));
   }, [sales, viewSection, approvalSubFilter, searchTerm, buyerFilter, companyFilter, stockTypeFilter, statusFilter, startDate, endDate]);
 
+  const totalPages = Math.ceil(filteredSales.length / pageSize) || 1;
+  const paginatedSales = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filteredSales.slice(start, start + pageSize);
+  }, [filteredSales, currentPage]);
+
+  React.useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, buyerFilter, companyFilter, stockTypeFilter, statusFilter, startDate, endDate, viewSection, approvalSubFilter]);
+
   const filteredBrokerages = useMemo(() => {
     let result = [...brokerages];
     if (searchTerm.trim()) {
@@ -384,11 +584,11 @@ export default function Sales() {
   }, [sales]);
 
   const pendingApprovalsCount = useMemo(() => {
-    return sales.filter((s) => s.is_approval && s.approval_status === "pending").length;
+    return sales.filter((s) => (s.is_approval || s.approval_status === "pending") && s.approval_status !== "approved_billed" && s.approval_status !== "returned").length;
   }, [sales]);
 
   const confirmedSalesCount = useMemo(() => {
-    return sales.filter((s) => !s.is_approval || s.approval_status === "approved_billed").length;
+    return sales.filter((s) => (!s.is_approval && s.approval_status !== "pending") || s.approval_status === "approved_billed").length;
   }, [sales]);
 
   return (
@@ -834,7 +1034,7 @@ export default function Sales() {
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredSales.map((sale) => {
+                    {paginatedSales.map((sale) => {
                       const isOutsideStock = sale.sell_type === "outside_stock";
                       const isApproval = sale.is_approval && sale.approval_status !== "approved_billed";
                       const isApprovedBilled = sale.approval_status === "approved_billed";
@@ -935,41 +1135,95 @@ export default function Sales() {
                                 >
                                   {formatINR(sale.balance)}
                                 </span>
-                                <button
-                                  type="button"
-                                  className="btn btn-ghost btn-xs"
-                                  style={{
-                                    fontSize: 10,
-                                    padding: "2px 6px",
-                                    height: 20,
-                                    color: "#059669",
-                                    background: "rgba(16, 185, 129, 0.12)",
-                                    border: "1px solid rgba(16, 185, 129, 0.3)",
-                                    borderRadius: 4,
-                                    fontWeight: 700,
-                                    cursor: "pointer",
-                                    whiteSpace: "nowrap",
-                                  }}
-                                  title="Select to mark full payment received"
-                                  disabled={markFullPaymentMutation.isPending}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    if (
-                                      window.confirm(
-                                        `Mark full payment of ${formatINR(sale.balance)} received for invoice ${sale.invoice_no}?`
-                                      )
-                                    ) {
-                                      markFullPaymentMutation.mutate({ id: sale.id });
-                                    }
-                                  }}
-                                >
-                                  ✓ Full Received
-                                </button>
+                                {(sale.paid_amount || 0) > 0 && (
+                                  <span style={{ fontSize: 10, color: "#d97706", fontWeight: 700 }}>
+                                    Recv: {formatINR(sale.paid_amount)}
+                                  </span>
+                                )}
+                                <div style={{ display: "flex", gap: 4, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                                  <button
+                                    type="button"
+                                    className="btn btn-ghost btn-xs"
+                                    style={{
+                                      fontSize: 10,
+                                      padding: "2px 6px",
+                                      height: 20,
+                                      color: "#2563eb",
+                                      background: "rgba(37, 99, 235, 0.12)",
+                                      border: "1px solid rgba(37, 99, 235, 0.3)",
+                                      borderRadius: 4,
+                                      fontWeight: 700,
+                                      cursor: "pointer",
+                                      whiteSpace: "nowrap",
+                                    }}
+                                    title="Record partial payment received"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setPartialPaySale(sale);
+                                      setPartialPayAmount(sale.balance);
+                                      setPartialPayDate(new Date().toISOString().slice(0, 10));
+                                      setPartialPayMode(sale.payment_mode || "Bank Wire / NEFT");
+                                      setPartialPayNote("");
+                                    }}
+                                  >
+                                    + Partial Pay
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn btn-ghost btn-xs"
+                                    style={{
+                                      fontSize: 10,
+                                      padding: "2px 6px",
+                                      height: 20,
+                                      color: "#059669",
+                                      background: "rgba(16, 185, 129, 0.12)",
+                                      border: "1px solid rgba(16, 185, 129, 0.3)",
+                                      borderRadius: 4,
+                                      fontWeight: 700,
+                                      cursor: "pointer",
+                                      whiteSpace: "nowrap",
+                                    }}
+                                    title="Select to mark full payment received"
+                                    disabled={markFullPaymentMutation.isPending}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (
+                                        window.confirm(
+                                          `Mark full payment of ${formatINR(sale.balance)} received for invoice ${sale.invoice_no}?`
+                                        )
+                                      ) {
+                                        markFullPaymentMutation.mutate({ id: sale.id });
+                                      }
+                                    }}
+                                  >
+                                    ✓ Full Received
+                                  </button>
+                                </div>
                               </div>
                             ) : (
-                              <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 4 }}>
-                                <span style={{ fontWeight: 800, color: "#10b981" }}>{formatINR(0)}</span>
-                                <span style={{ fontSize: 10, color: "#10b981", fontWeight: 700 }}>✓ Paid</span>
+                              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
+                                <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 4 }}>
+                                  <span style={{ fontWeight: 800, color: "#10b981" }}>{formatINR(0)}</span>
+                                  <span style={{ fontSize: 10, color: "#10b981", fontWeight: 700 }}>✓ Paid</span>
+                                </div>
+                                {(sale.payments || []).length > 0 && (
+                                  <button
+                                    type="button"
+                                    className="btn btn-ghost btn-xs"
+                                    style={{ fontSize: 9, padding: "1px 4px", color: "var(--muted)" }}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setPartialPaySale(sale);
+                                      setPartialPayAmount(0);
+                                      setPartialPayDate(new Date().toISOString().slice(0, 10));
+                                      setPartialPayMode("Bank Wire / NEFT");
+                                      setPartialPayNote("");
+                                    }}
+                                    title="View payment receipt history"
+                                  >
+                                    Payments ({sale.payments?.length})
+                                  </button>
+                                )}
                               </div>
                             )}
                           </td>
@@ -1025,6 +1279,33 @@ export default function Sales() {
                                 </>
                               )}
 
+                              {!isApproval && (
+                                <button
+                                  className="btn btn-outline btn-xs"
+                                  style={{
+                                    fontSize: 10,
+                                    color: "#2563eb",
+                                    borderColor: "rgba(37, 99, 235, 0.4)",
+                                    background: "rgba(37, 99, 235, 0.06)",
+                                    fontWeight: 700,
+                                    whiteSpace: "nowrap",
+                                  }}
+                                  title="Convert this commercial sale into an active approval memo"
+                                  disabled={convertSaleMutation.isPending}
+                                  onClick={() => {
+                                    if (
+                                      window.confirm(
+                                        `Convert invoice ${sale.invoice_no} (${sale.buyer_name}) into an active approval memo?\n\nAssociated gemstone packets will be restored to 'on_approval' status.`
+                                      )
+                                    ) {
+                                      convertSaleMutation.mutate({ saleId: sale.id });
+                                    }
+                                  }}
+                                >
+                                  📋 To Memo
+                                </button>
+                              )}
+
                               <button
                                 className="btn btn-ghost btn-xs"
                                 title="View Invoice / Approval Voucher"
@@ -1061,6 +1342,45 @@ export default function Sales() {
                   </tbody>
                 </table>
               </div>
+              {totalPages > 1 && (
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    padding: "10px 16px",
+                    borderTop: "1px solid var(--border)",
+                    background: "var(--surface)",
+                    flexWrap: "wrap",
+                    gap: 10,
+                  }}
+                >
+                  <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600 }}>
+                    Showing {(currentPage - 1) * pageSize + 1} - {Math.min(currentPage * pageSize, filteredSales.length)} of {filteredSales.length} invoices
+                  </span>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <button
+                      type="button"
+                      className="btn btn-outline btn-xs"
+                      disabled={currentPage <= 1}
+                      onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                    >
+                      ← Previous
+                    </button>
+                    <span style={{ fontSize: 12, fontWeight: 800 }}>
+                      Page {currentPage} of {totalPages}
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn-outline btn-xs"
+                      disabled={currentPage >= totalPages}
+                      onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                    >
+                      Next →
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -1240,7 +1560,9 @@ export default function Sales() {
                 <tbody>
                   {settlementRows.map((row, idx) => {
                     const billedAmount = Math.round(row.weight_taken * row.rate_per_unit);
-                    const hasMultiStones = row.original_pieces > 1;
+                    const isSingle = !row.is_uncountable && row.original_pieces === 1;
+                    const hasMultiStonesWithWeights = !row.is_uncountable && row.original_pieces > 1 && Boolean(row.has_individual_weights);
+                    const isMultiUnweighted = !row.is_uncountable && row.original_pieces > 1 && !row.has_individual_weights;
 
                     return (
                       <React.Fragment key={idx}>
@@ -1250,123 +1572,229 @@ export default function Sales() {
                             <div style={{ fontSize: 11, color: "var(--muted)" }}>
                               {row.particulars} {row.shape ? `• ${row.shape}` : ""}
                             </div>
-                            {hasMultiStones && (
+                            {isSingle && (
+                              <div style={{ fontSize: 10, color: "var(--primary)", fontWeight: 700, marginTop: 2 }}>
+                                🏷️ Single Piece Stone
+                              </div>
+                            )}
+                            {hasMultiStonesWithWeights && (
                               <div style={{ fontSize: 10, color: "var(--primary)", fontWeight: 700, marginTop: 2 }}>
                                 💎 {row.original_pieces} Individual Stones below
                               </div>
                             )}
+                            {isMultiUnweighted && (
+                              <div style={{ fontSize: 10, color: "#8b5cf6", fontWeight: 700, marginTop: 2 }}>
+                                📦 Multi-piece Parcel ({row.original_pieces} pcs unweighted)
+                              </div>
+                            )}
                           </td>
                           <td>
-                            <div style={{ fontWeight: 700 }}>{row.original_pieces} pcs</div>
+                            <div style={{ fontWeight: 700 }}>
+                              {row.is_uncountable ? "Bulk Parcel" : `${row.original_pieces} pcs`}
+                            </div>
                             <div style={{ fontSize: 11, color: "var(--muted)" }}>
                               {row.original_weight.toFixed(2)} cts @ ₹{row.rate_per_unit}/ct
                             </div>
                           </td>
-                          {/* Pcs Taken */}
+
+                          {/* Pcs Taken (Sale) */}
                           <td>
-                            <input
-                              type="number"
-                              min="0"
-                              max={row.original_pieces}
-                              className="input"
-                              style={{ height: 30, fontSize: 12, padding: "2px 8px" }}
-                              value={row.pieces_taken}
-                              onChange={(e) =>
-                                handleUpdateSettlementRow(idx, "pieces_taken", parseInt(e.target.value, 10) || 0)
-                              }
-                            />
+                            {row.is_uncountable ? (
+                              <span style={{ fontSize: 11, color: "var(--muted)", fontWeight: 700 }}>— (Bulk)</span>
+                            ) : isSingle ? (
+                              <button
+                                type="button"
+                                className="btn btn-xs"
+                                onClick={() => handleToggleSingleStone(idx)}
+                                style={{
+                                  fontSize: 11,
+                                  fontWeight: 800,
+                                  padding: "3px 8px",
+                                  borderRadius: 5,
+                                  cursor: "pointer",
+                                  border: `1.5px solid ${row.pieces_taken === 1 ? "#059669" : "var(--border)"}`,
+                                  background: row.pieces_taken === 1 ? "rgba(16, 185, 129, 0.15)" : "transparent",
+                                  color: row.pieces_taken === 1 ? "#059669" : "var(--muted)",
+                                }}
+                              >
+                                {row.pieces_taken === 1 ? "✓ 1 pc Taken" : "○ 0 pcs"}
+                              </button>
+                            ) : hasMultiStonesWithWeights ? (
+                              <span style={{ fontSize: 12, fontWeight: 700 }}>{row.pieces_taken} pcs</span>
+                            ) : (
+                              <input
+                                type="number"
+                                name="pieces"
+                                min="0"
+                                max={row.original_pieces}
+                                className="input pieces-input"
+                                style={{ height: 30, fontSize: 12, padding: "2px 8px", width: 70 }}
+                                value={row.pieces_taken}
+                                onChange={(e) =>
+                                  handleUpdateSettlementRow(idx, "pieces_taken", parseInt(e.target.value, 10) || 0)
+                                }
+                              />
+                            )}
                           </td>
-                          {/* Weight Taken */}
+
+                          {/* Carats Taken */}
                           <td>
-                            <input
-                              type="number"
-                              step="0.01"
-                              min="0"
-                              max={row.original_weight}
-                              className="input"
-                              style={{ height: 30, fontSize: 12, padding: "2px 8px" }}
-                              value={row.weight_taken}
-                              onChange={(e) =>
-                                handleUpdateSettlementRow(idx, "weight_taken", parseFloat(e.target.value) || 0)
-                              }
-                            />
+                            {isSingle || hasMultiStonesWithWeights ? (
+                              <div style={{ fontSize: 12, fontWeight: 800, color: row.pieces_taken > 0 ? "var(--success)" : "var(--muted)" }}>
+                                {row.weight_taken > 0 ? `${row.weight_taken.toFixed(2)} cts` : "0.00 cts"}
+                              </div>
+                            ) : (
+                              <input
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                max={row.original_weight}
+                                className="input"
+                                style={{ height: 30, fontSize: 12, padding: "2px 8px", width: 85 }}
+                                value={row.weight_taken}
+                                onChange={(e) =>
+                                  handleUpdateSettlementRow(idx, "weight_taken", parseFloat(e.target.value) || 0)
+                                }
+                              />
+                            )}
                           </td>
+
                           {/* Pcs Returned */}
                           <td>
-                            <input
-                              type="number"
-                              min="0"
-                              max={row.original_pieces}
-                              className="input"
-                              style={{ height: 30, fontSize: 12, padding: "2px 8px" }}
-                              value={row.pieces_returned}
-                              onChange={(e) =>
-                                handleUpdateSettlementRow(idx, "pieces_returned", parseInt(e.target.value, 10) || 0)
-                              }
-                            />
+                            {row.is_uncountable ? (
+                              <span style={{ fontSize: 11, color: "var(--muted)", fontWeight: 700 }}>— (Bulk)</span>
+                            ) : isSingle ? (
+                              <button
+                                type="button"
+                                className="btn btn-xs"
+                                onClick={() => handleToggleSingleStone(idx)}
+                                style={{
+                                  fontSize: 11,
+                                  fontWeight: 800,
+                                  padding: "3px 8px",
+                                  borderRadius: 5,
+                                  cursor: "pointer",
+                                  border: `1.5px solid ${row.pieces_returned === 1 ? "#f59e0b" : "var(--border)"}`,
+                                  background: row.pieces_returned === 1 ? "rgba(245, 158, 11, 0.15)" : "transparent",
+                                  color: row.pieces_returned === 1 ? "#b45309" : "var(--muted)",
+                                }}
+                              >
+                                {row.pieces_returned === 1 ? "↩ 1 pc Ret." : "—"}
+                              </button>
+                            ) : hasMultiStonesWithWeights ? (
+                              <span style={{ fontSize: 12, fontWeight: 700 }}>{row.pieces_returned} pcs</span>
+                            ) : (
+                              <input
+                                type="number"
+                                min="0"
+                                max={row.original_pieces}
+                                className="input"
+                                style={{ height: 30, fontSize: 12, padding: "2px 8px", width: 70 }}
+                                value={row.pieces_returned}
+                                onChange={(e) =>
+                                  handleUpdateSettlementRow(idx, "pieces_returned", parseInt(e.target.value, 10) || 0)
+                                }
+                              />
+                            )}
                           </td>
-                          {/* Weight Returned */}
+
+                          {/* Carats Returned (Only shown as editable input for bulk orders and unweighted multi-piece stones) */}
                           <td>
-                            <input
-                              type="number"
-                              step="0.01"
-                              min="0"
-                              max={row.original_weight}
-                              className="input"
-                              style={{ height: 30, fontSize: 12, padding: "2px 8px" }}
-                              value={row.weight_returned}
-                              onChange={(e) =>
-                                handleUpdateSettlementRow(idx, "weight_returned", parseFloat(e.target.value) || 0)
-                              }
-                            />
+                            {isSingle || hasMultiStonesWithWeights ? (
+                              <div style={{ fontSize: 12, fontWeight: 800, color: row.pieces_returned > 0 ? "#b45309" : "var(--muted)" }}>
+                                {row.weight_returned > 0 ? `${row.weight_returned.toFixed(2)} cts` : "—"}
+                              </div>
+                            ) : (
+                              <input
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                max={row.original_weight}
+                                className="input"
+                                style={{ height: 30, fontSize: 12, padding: "2px 8px", width: 85 }}
+                                value={row.weight_returned}
+                                onChange={(e) =>
+                                  handleUpdateSettlementRow(idx, "weight_returned", parseFloat(e.target.value) || 0)
+                                }
+                              />
+                            )}
                           </td>
+
                           {/* Line Billed */}
                           <td style={{ textAlign: "right", fontWeight: 800, color: "var(--primary)" }}>
                             {formatINR(billedAmount)}
                           </td>
                         </tr>
 
-                        {/* Interactive Stone Selection Drawer for Multi-Stone Packets */}
-                        {hasMultiStones && (
+                        {/* Interactive Stone Selection Drawer: ONLY for packets with genuine individual stone weights and pieces > 1 */}
+                        {hasMultiStonesWithWeights && (
                           <tr style={{ background: "var(--surface-sunken)" }}>
                             <td colSpan={7} style={{ padding: "8px 12px" }}>
-                              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                                <span style={{ fontSize: 11, fontWeight: 800, color: "var(--primary)" }}>
-                                  Select stones approved for sales:
-                                </span>
-                                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                                  {Array.from({ length: row.original_pieces }).map((_, stIdx) => {
-                                    const isTaken = row.selected_stones ? row.selected_stones[stIdx] : true;
-                                    const stWt = row.stone_weights && row.stone_weights[stIdx] !== undefined
-                                      ? row.stone_weights[stIdx]
-                                      : (row.original_weight / row.original_pieces);
-
-                                    return (
-                                      <button
-                                        key={stIdx}
-                                        type="button"
-                                        onClick={() => handleToggleStoneSelection(idx, stIdx)}
-                                        style={{
-                                          display: "inline-flex",
-                                          alignItems: "center",
-                                          gap: 4,
-                                          fontSize: 11,
-                                          fontWeight: 700,
-                                          padding: "3px 8px",
-                                          borderRadius: 4,
-                                          border: `1.5px solid ${isTaken ? "#059669" : "#cbd5e1"}`,
-                                          background: isTaken ? "rgba(16, 185, 129, 0.15)" : "var(--surface)",
-                                          color: isTaken ? "#065f46" : "#64748b",
-                                          cursor: "pointer",
-                                        }}
-                                        title={`Click to toggle Stone #${stIdx + 1} between Taken and Returned`}
-                                      >
-                                        <span>{isTaken ? "✓ Taken" : "↩ Return"}</span>
-                                        <span>Stone #{stIdx + 1} ({Number(stWt).toFixed(2)}ct)</span>
-                                      </button>
-                                    );
-                                  })}
+                              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                                  <span style={{ fontSize: 11, fontWeight: 800, color: "var(--primary)" }}>
+                                    💎 Individual Stones:
+                                  </span>
+                                  <span style={{ fontSize: 11, color: "var(--muted)" }}>
+                                    (Click a stone to toggle between Billed & Returned)
+                                  </span>
                                 </div>
+                                <div style={{ display: "flex", gap: 6 }}>
+                                  <button
+                                    type="button"
+                                    className="btn btn-xs"
+                                    style={{ fontSize: 10, padding: "2px 6px", background: "rgba(16, 185, 129, 0.12)", color: "#065f46", border: "1px solid #059669" }}
+                                    onClick={() => handleSetRowQuickAll(idx, "take_all")}
+                                  >
+                                    ✓ Keep All Pieces
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn btn-xs"
+                                    style={{ fontSize: 10, padding: "2px 6px", background: "rgba(245, 158, 11, 0.12)", color: "#b45309", border: "1px solid #f59e0b" }}
+                                    onClick={() => handleSetRowQuickAll(idx, "return_all")}
+                                  >
+                                    ↩ Return All Pieces
+                                  </button>
+                                </div>
+                              </div>
+                              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8, maxHeight: 180, overflowY: "auto", padding: "2px 0" }}>
+                                {Array.from({ length: Math.min(row.original_pieces, 100) }).map((_, stIdx) => {
+                                  const isTaken = row.selected_stones ? row.selected_stones[stIdx] : true;
+                                  const stWt = row.stone_weights && row.stone_weights[stIdx] !== undefined
+                                    ? row.stone_weights[stIdx]
+                                    : (row.original_weight / row.original_pieces);
+
+                                  return (
+                                    <button
+                                      key={stIdx}
+                                      type="button"
+                                      onClick={() => handleToggleStoneSelection(idx, stIdx)}
+                                      style={{
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        gap: 5,
+                                        fontSize: 11,
+                                        fontWeight: 700,
+                                        padding: "4px 9px",
+                                        borderRadius: 5,
+                                        border: `1.5px solid ${isTaken ? "#059669" : "#f59e0b"}`,
+                                        background: isTaken ? "rgba(16, 185, 129, 0.15)" : "rgba(245, 158, 11, 0.15)",
+                                        color: isTaken ? "#065f46" : "#b45309",
+                                        cursor: "pointer",
+                                      }}
+                                      title={`Click to toggle Stone #${stIdx + 1} (${Number(stWt).toFixed(2)}ct)`}
+                                    >
+                                      <span>{isTaken ? "✓ Billed:" : "↩ Returned:"}</span>
+                                      <span>Stone #{stIdx + 1} ({Number(stWt).toFixed(2)}ct)</span>
+                                    </button>
+                                  );
+                                })}
+                                {row.original_pieces > 100 && (
+                                  <span style={{ fontSize: 11, color: "var(--muted)", padding: "4px 8px", fontStyle: "italic", alignSelf: "center" }}>
+                                    ... and {row.original_pieces - 100} more stones in lot (use Pieces Taken / Returned fields above for bulk lots)
+                                  </span>
+                                )}
                               </div>
                             </td>
                           </tr>
@@ -1394,8 +1822,11 @@ export default function Sales() {
                   ✓ To Be Billed as Confirmed Sale:
                 </div>
                 <div style={{ fontSize: 16, fontWeight: 900, marginTop: 4 }}>
-                  {settlementRows.reduce((s, r) => s + r.pieces_taken, 0)} Stones (
-                  {settlementRows.reduce((s, r) => s + r.weight_taken, 0).toFixed(2)} cts)
+                  {settlementRows.some((r) => !r.is_uncountable)
+                    ? `${settlementRows.reduce((s, r) => s + r.pieces_taken, 0)} Stones (`
+                    : ""}
+                  {settlementRows.reduce((s, r) => s + r.weight_taken, 0).toFixed(2)} cts
+                  {settlementRows.some((r) => !r.is_uncountable) ? ")" : ""}
                 </div>
                 <div style={{ fontSize: 14, fontWeight: 800, color: "var(--primary)", marginTop: 2 }}>
                   Subtotal: {formatINR(settlementRows.reduce((s, r) => s + Math.round(r.weight_taken * r.rate_per_unit), 0))}
@@ -1407,8 +1838,11 @@ export default function Sales() {
                   ↩ Restoring to Vault In-Stock Inventory:
                 </div>
                 <div style={{ fontSize: 16, fontWeight: 900, marginTop: 4 }}>
-                  {settlementRows.reduce((s, r) => s + r.pieces_returned, 0)} Stones (
-                  {settlementRows.reduce((s, r) => s + r.weight_returned, 0).toFixed(2)} cts)
+                  {settlementRows.some((r) => !r.is_uncountable)
+                    ? `${settlementRows.reduce((s, r) => s + r.pieces_returned, 0)} Stones (`
+                    : ""}
+                  {settlementRows.reduce((s, r) => s + r.weight_returned, 0).toFixed(2)} cts
+                  {settlementRows.some((r) => !r.is_uncountable) ? ")" : ""}
                 </div>
                 <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>
                   Packets in vault will be updated with returned pieces & remaining weight.
@@ -1444,17 +1878,36 @@ export default function Sales() {
                 onClick={() => {
                   settleApprovalMutation.mutate({
                     saleId: settlingSale.id,
-                    items: settlementRows.map((r) => ({
-                      packet_id: r.packet_id,
-                      packet_number: r.packet_number,
-                      particulars: r.particulars,
-                      shape: r.shape,
-                      pieces_taken: r.pieces_taken,
-                      weight_taken: r.weight_taken,
-                      pieces_returned: r.pieces_returned,
-                      weight_returned: r.weight_returned,
-                      rate_per_unit: r.rate_per_unit,
-                    })),
+                    items: settlementRows.map((r, rowIdx) => {
+                      const sWeights = r.stone_weights || [];
+                      const takenWts: number[] = [];
+                      const returnedWts: number[] = [];
+                      if (!r.is_uncountable && r.original_pieces > 0) {
+                        for (let k = 0; k < r.original_pieces; k++) {
+                          const w = sWeights[k] !== undefined ? sWeights[k] : 0;
+                          const isTaken = r.selected_stones ? r.selected_stones[k] : k < r.pieces_taken;
+                          if (isTaken) takenWts.push(w);
+                          else returnedWts.push(w);
+                        }
+                      }
+                      return {
+                        item_index: r.item_index !== undefined ? r.item_index : rowIdx,
+                        item_id: r.item_id,
+                        stone_id: r.stone_id,
+                        packet_id: r.packet_id,
+                        packet_number: r.packet_number,
+                        particulars: r.particulars,
+                        shape: r.shape,
+                        pieces_taken: r.pieces_taken,
+                        weight_taken: r.weight_taken,
+                        pieces_returned: r.pieces_returned,
+                        weight_returned: r.weight_returned,
+                        rate_per_unit: r.rate_per_unit,
+                        stone_weights: sWeights,
+                        taken_stone_weights: takenWts,
+                        returned_stone_weights: returnedWts,
+                      };
+                    }),
                     notes: settlementNotes.trim(),
                   });
                 }}
@@ -1570,7 +2023,7 @@ export default function Sales() {
                   if (printTakenCompany !== "all") {
                     filtered = filtered.filter((s) => s.company_name === printTakenCompany);
                   }
-                  const totalPcs = filtered.reduce((sum, s) => sum + (s.items || []).reduce((is, it) => is + (it.pieces || 1), 0), 0);
+                  const totalPcs = filtered.reduce((sum, s) => sum + (s.items || []).reduce((is, it) => is + (it.is_uncountable ? 0 : (it.pieces || 0)), 0), 0);
                   const totalCarats = filtered.reduce((sum, s) => sum + (s.items || []).reduce((is, it) => is + (it.weight || 0), 0), 0);
                   const totalRev = filtered.reduce((sum, s) => sum + (s.total || 0), 0);
 
@@ -1609,6 +2062,314 @@ export default function Sales() {
                 🖨️ Print Statement for {printTakenBuyer === "all" ? "All Buyers" : printTakenBuyer}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Partial / Flexible Payment Receipt Modal */}
+      {partialPaySale && (
+        <div className="modal-backdrop" onClick={() => setPartialPaySale(null)}>
+          <div
+            className="modal"
+            style={{ maxWidth: 540 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <h3 style={{ margin: 0, fontSize: 16, fontWeight: 900, display: "flex", alignItems: "center", gap: 8 }}>
+                <span>💳</span> Record Payment Received ({partialPaySale.invoice_no})
+              </h3>
+              <button
+                type="button"
+                className="btn btn-ghost btn-xs"
+                onClick={() => setPartialPaySale(null)}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Invoice Financial Summary Card */}
+            <div
+              style={{
+                background: "var(--surface)",
+                border: "1px solid var(--border)",
+                borderRadius: 8,
+                padding: "10px 14px",
+                marginBottom: 16,
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr 1fr",
+                gap: 8,
+                fontSize: 12,
+              }}
+            >
+              <div>
+                <span style={{ color: "var(--muted)", fontSize: 11 }}>Party / Buyer:</span>
+                <div style={{ fontWeight: 800 }}>{partialPaySale.buyer_name}</div>
+              </div>
+              <div>
+                <span style={{ color: "var(--muted)", fontSize: 11 }}>Total Invoice Value:</span>
+                <div style={{ fontWeight: 800 }}>{formatINR(partialPaySale.total)}</div>
+              </div>
+              <div>
+                <span style={{ color: "var(--muted)", fontSize: 11 }}>Previously Paid:</span>
+                <div style={{ fontWeight: 800, color: "#059669" }}>
+                  {formatINR(partialPaySale.paid_amount || 0)}
+                </div>
+              </div>
+            </div>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!partialPaySale) return;
+                if (partialPayAmount <= 0) {
+                  show("Please enter a payment amount greater than 0", "error");
+                  return;
+                }
+                if (partialPayAmount > partialPaySale.balance) {
+                  show(`Payment amount (${formatINR(partialPayAmount)}) cannot exceed remaining balance due of ${formatINR(partialPaySale.balance)}`, "error");
+                  return;
+                }
+                addPartialPaymentMutation.mutate({
+                  id: partialPaySale.id,
+                  amount: Number(partialPayAmount) || 0,
+                  mode: partialPayMode,
+                  date: partialPayDate || new Date().toISOString().slice(0, 10),
+                  note: partialPayNote,
+                });
+              }}
+            >
+              {partialPaySale.balance <= 0 && (
+                <div
+                  style={{
+                    padding: "8px 12px",
+                    background: "rgba(16, 185, 129, 0.1)",
+                    border: "1px solid rgba(16, 185, 129, 0.3)",
+                    borderRadius: 6,
+                    color: "#065f46",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    marginBottom: 12,
+                  }}
+                >
+                  ✓ Invoice is Already Fully Cleared (₹0 Remaining Due)
+                </div>
+              )}
+
+              {partialPayAmount > partialPaySale.balance && (
+                <div
+                  style={{
+                    padding: "8px 12px",
+                    background: "#fef2f2",
+                    border: "1px solid #f87171",
+                    borderRadius: 6,
+                    color: "#b91c1c",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    marginBottom: 12,
+                  }}
+                >
+                  ⚠️ Error: Payment amount ({formatINR(partialPayAmount)}) cannot exceed remaining invoice balance due of {formatINR(partialPaySale.balance)}!
+                </div>
+              )}
+
+              <div
+                style={{
+                  background: "rgba(37, 99, 235, 0.05)",
+                  border: "1px solid rgba(37, 99, 235, 0.2)",
+                  borderRadius: 8,
+                  padding: 14,
+                  marginBottom: 16,
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <label className="label" style={{ margin: 0, fontWeight: 800, fontSize: 12 }}>
+                    Payment Amount to Receive (₹):*
+                  </label>
+                  <span style={{ fontSize: 11, color: "var(--muted)" }}>
+                    Current Due: <strong style={{ color: "#ef4444" }}>{formatINR(partialPaySale.balance)}</strong>
+                  </span>
+                </div>
+
+                <input
+                  type="number"
+                  min="1"
+                  max={partialPaySale.balance}
+                  disabled={partialPaySale.balance <= 0}
+                  step="any"
+                  className="input"
+                  style={{ fontSize: 16, fontWeight: 800, color: "var(--primary)", marginBottom: 8 }}
+                  value={partialPayAmount || ""}
+                  onChange={(e) => setPartialPayAmount(Math.max(0, Number(e.target.value) || 0))}
+                  placeholder="Enter payment amount in ₹"
+                  required
+                />
+
+                {/* Quick Presets */}
+                {partialPaySale.balance > 0 && (
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+                    <button
+                      type="button"
+                      className="btn btn-xs btn-outline"
+                      onClick={() => setPartialPayAmount(partialPaySale.balance)}
+                    >
+                      Full Balance ({formatINR(partialPaySale.balance)})
+                    </button>
+                    {partialPaySale.balance > 1000 && (
+                      <button
+                        type="button"
+                        className="btn btn-xs btn-outline"
+                        onClick={() => setPartialPayAmount(Math.round(partialPaySale.balance / 2))}
+                      >
+                        50% ({formatINR(Math.round(partialPaySale.balance / 2))})
+                      </button>
+                    )}
+                    {partialPaySale.balance > 2000 && (
+                      <button
+                        type="button"
+                        className="btn btn-xs btn-outline"
+                        onClick={() => setPartialPayAmount(Math.round(partialPaySale.balance / 4))}
+                      >
+                        25% ({formatINR(Math.round(partialPaySale.balance / 4))})
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* Real-time remaining balance calculation */}
+                <div
+                  style={{
+                    fontSize: 11,
+                    padding: "6px 10px",
+                    background: "var(--surface)",
+                    borderRadius: 6,
+                    border: "1px solid var(--border)",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                  }}
+                >
+                  <span>New Balance Due After This Payment:</span>
+                  <strong
+                    style={{
+                      color:
+                        Math.max(0, partialPaySale.balance - partialPayAmount) === 0
+                          ? "#059669"
+                          : "#ef4444",
+                    }}
+                  >
+                    {Math.max(0, partialPaySale.balance - partialPayAmount) === 0
+                      ? "✓ Fully Cleared (₹0)"
+                      : formatINR(Math.max(0, partialPaySale.balance - partialPayAmount))}
+                  </strong>
+                </div>
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+                <div>
+                  <label className="label" style={{ fontSize: 11, margin: "0 0 4px" }}>
+                    Receipt Date:
+                  </label>
+                  <input
+                    type="date"
+                    className="input"
+                    value={partialPayDate}
+                    onChange={(e) => setPartialPayDate(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="label" style={{ fontSize: 11, margin: "0 0 4px" }}>
+                    Payment Mode:
+                  </label>
+                  <select
+                    className="select"
+                    value={partialPayMode}
+                    onChange={(e) => setPartialPayMode(e.target.value)}
+                  >
+                    <option value="Bank Wire / NEFT">Bank Wire / NEFT</option>
+                    <option value="Cash">Cash</option>
+                    <option value="Cheque">Cheque</option>
+                    <option value="Angadia">Angadia</option>
+                    <option value="UPI">UPI</option>
+                  </select>
+                </div>
+              </div>
+
+              <div style={{ marginBottom: 16 }}>
+                <label className="label" style={{ fontSize: 11, margin: "0 0 4px" }}>
+                  Payment Notes / UTR / Reference:
+                </label>
+                <input
+                  type="text"
+                  className="input"
+                  placeholder="e.g. Bank Ref #, Cheque #, or Angadia receipt..."
+                  value={partialPayNote}
+                  onChange={(e) => setPartialPayNote(e.target.value)}
+                />
+              </div>
+
+              {/* Previously Logged Payments History */}
+              {(partialPaySale.payments || []).length > 0 && (
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)", marginBottom: 6 }}>
+                    Payment History ({partialPaySale.payments?.length} receipts logged):
+                  </div>
+                  <div
+                    style={{
+                      maxHeight: 120,
+                      overflowY: "auto",
+                      border: "1px solid var(--border)",
+                      borderRadius: 6,
+                      fontSize: 11,
+                    }}
+                  >
+                    <table className="table" style={{ width: "100%", margin: 0 }}>
+                      <thead>
+                        <tr>
+                          <th>Date</th>
+                          <th>Mode</th>
+                          <th>Note</th>
+                          <th style={{ textAlign: "right" }}>Amount</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {partialPaySale.payments?.map((pm, idx) => (
+                          <tr key={pm.id || idx}>
+                            <td>{shortDate(pm.date)}</td>
+                            <td>{pm.mode}</td>
+                            <td>{pm.note || "—"}</td>
+                            <td style={{ textAlign: "right", fontWeight: 700, color: "#059669" }}>
+                              {formatINR(pm.amount)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+                <button
+                  type="button"
+                  className="btn btn-outline"
+                  onClick={() => setPartialPaySale(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                  style={{ fontWeight: 800 }}
+                  disabled={
+                    addPartialPaymentMutation.isPending ||
+                    partialPaySale.balance <= 0 ||
+                    partialPayAmount > partialPaySale.balance
+                  }
+                >
+                  {addPartialPaymentMutation.isPending ? "Recording..." : "Record Payment & Recalculate Balance"}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

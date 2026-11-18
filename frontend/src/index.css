@@ -524,6 +524,43 @@ select.input option, .select option {
 textarea.input { resize: vertical; min-height: 80px; }
 
 /* ============================================================
+   NUMERIC INPUTS: REMOVE SPINNERS EXCEPT FOR PIECES FIELDS
+   ============================================================ */
+/* Hide up/down arrows for all number fields (carats, weight, prices, rates, phone, amounts, etc.) */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none !important;
+  margin: 0 !important;
+}
+input[type="number"] {
+  -moz-appearance: textfield !important;
+}
+
+/* Explicitly retain up/down arrows exclusively on Pieces fields */
+input[type="number"].pieces-input::-webkit-outer-spin-button,
+input[type="number"].pieces-input::-webkit-inner-spin-button,
+input[type="number"][name*="pieces"]::-webkit-outer-spin-button,
+input[type="number"][name*="pieces"]::-webkit-inner-spin-button,
+input[type="number"][name*="pcs"]::-webkit-outer-spin-button,
+input[type="number"][name*="pcs"]::-webkit-inner-spin-button,
+input[type="number"][data-type="pieces"]::-webkit-outer-spin-button,
+input[type="number"][data-type="pieces"]::-webkit-inner-spin-button,
+.pieces-field input[type="number"]::-webkit-outer-spin-button,
+.pieces-field input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: inner-spin-button !important;
+  display: block !important;
+  margin: auto !important;
+  opacity: 1 !important;
+}
+input[type="number"].pieces-input,
+input[type="number"][name*="pieces"],
+input[type="number"][name*="pcs"],
+input[type="number"][data-type="pieces"],
+.pieces-field input[type="number"] {
+  -moz-appearance: number-input !important;
+}
+
+/* ============================================================
    COMPONENTS — TABLE
    ============================================================ */
 .table-wrap { overflow-x: auto; border-radius: var(--r-lg); border: 1.5px solid var(--border); background: var(--surface); }

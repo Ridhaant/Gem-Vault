@@ -18,15 +18,24 @@ export default function Purchases() {
   const { show } = useToast();
   const [searchTerm, setSearchTerm] = useState("");
   const [supplierFilter, setSupplierFilter] = useState("all");
+  const [paymentStatusFilter, setPaymentStatusFilter] = useState<"all" | "pending" | "cleared">("all");
+  const [brokerageFilter, setBrokerageFilter] = useState<"all" | "pending" | "paid">("all");
   const [printRegisterModalOpen, setPrintRegisterModalOpen] = useState(false);
   const [selectedPrintSupplier, setSelectedPrintSupplier] = useState("all");
 
-  // Payment Recording Modal State
+  // Supplier Payment Recording Modal State
   const [paymentModalPurchase, setPaymentModalPurchase] = useState<GemPurchase | null>(null);
   const [paymentDate, setPaymentDate] = useState(new Date().toISOString().slice(0, 10));
   const [paymentAmount, setPaymentAmount] = useState<number>(0);
   const [paymentMode, setPaymentMode] = useState("Bank Wire / NEFT");
   const [paymentNote, setPaymentNote] = useState("");
+
+  // Broker Payment Recording Modal State
+  const [brokerPaymentPurchase, setBrokerPaymentPurchase] = useState<GemPurchase | null>(null);
+  const [brokerPayDate, setBrokerPayDate] = useState(new Date().toISOString().slice(0, 10));
+  const [brokerPayAmount, setBrokerPayAmount] = useState<number>(0);
+  const [brokerPayMode, setBrokerPayMode] = useState("Bank Wire / NEFT");
+  const [brokerPayNote, setBrokerPayNote] = useState("");
 
   const { data: purchases = [], isLoading } = useQuery<GemPurchase[]>({
     queryKey: ["purchases"],
@@ -48,26 +57,40 @@ export default function Purchases() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["purchases"] });
       queryClient.invalidateQueries({ queryKey: ["packets"] });
+      queryClient.invalidateQueries({ queryKey: ["boxes"] });
       queryClient.invalidateQueries({ queryKey: ["analytics_overview"] });
       show("Purchase record deleted and vault synchronized", "info");
     },
     onError: (err: any) => show("Error deleting purchase: " + err.message, "error"),
   });
 
-  // Record Installment Payment Mutation
+  const cancelPurchaseMutation = useMutation({
+    mutationFn: ({ id, reason }: { id: string; reason?: string }) =>
+      apiPost(`/purchases/${id}/cancel`, { reason }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["purchases"] });
+      queryClient.invalidateQueries({ queryKey: ["packets"] });
+      queryClient.invalidateQueries({ queryKey: ["boxes"] });
+      queryClient.invalidateQueries({ queryKey: ["analytics_overview"] });
+      show("Purchase cancelled and returned to supplier. Vault inventory synchronized.", "info");
+    },
+    onError: (err: any) => show("Error cancelling purchase: " + err.message, "error"),
+  });
+
+  // Record Supplier Installment Payment Mutation
   const addPaymentMutation = useMutation({
     mutationFn: ({ id, payload }: { id: string; payload: any }) =>
       apiPost(`/purchases/${id}/payments`, payload),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["purchases"] });
       queryClient.invalidateQueries({ queryKey: ["analytics_overview"] });
-      show("Payment installment recorded successfully!", "success");
+      show("Supplier payment installment recorded successfully!", "success");
       setPaymentModalPurchase(null);
     },
     onError: (err: any) => show("Error recording payment: " + err.message, "error"),
   });
 
-  // Quick Full Payment Mutation
+  // Quick Full Supplier Payment Mutation
   const markFullPaymentMutation = useMutation({
     mutationFn: ({ id }: { id: string }) =>
       apiPost(`/purchases/${id}/full-payment`, { payment_mode: "Bank Wire / NEFT" }),
@@ -80,12 +103,62 @@ export default function Purchases() {
     onError: (err: any) => show("Error marking full payment: " + err.message, "error"),
   });
 
+  // Broker Payment Mutations
+  const addBrokerPaymentMutation = useMutation({
+    mutationFn: ({ id, payload }: { id: string; payload: any }) =>
+      apiPost(`/purchases/${id}/broker-payments`, payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["purchases"] });
+      queryClient.invalidateQueries({ queryKey: ["analytics_overview"] });
+      show("Broker payment installment recorded successfully!", "success");
+      setBrokerPaymentPurchase(null);
+    },
+    onError: (err: any) => show("Error recording broker payment: " + err.message, "error"),
+  });
+
+  const markBrokerFullPaymentMutation = useMutation({
+    mutationFn: ({ id, payment_mode }: { id: string; payment_mode?: string }) =>
+      apiPost(`/purchases/${id}/broker-full-payment`, { payment_mode: payment_mode || "Bank Wire / NEFT" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["purchases"] });
+      queryClient.invalidateQueries({ queryKey: ["analytics_overview"] });
+      show("Full middleman broker fee marked settled!", "success");
+      setBrokerPaymentPurchase(null);
+    },
+    onError: (err: any) => show("Error clearing broker fee: " + err.message, "error"),
+  });
+
+  // Toggle Brokerage Paid Status Mutation
+  const toggleBrokeragePaidMutation = useMutation({
+    mutationFn: ({ id, paid }: { id: string; paid: boolean }) =>
+      apiPost(`/purchases/${id}/brokerage-paid`, { paid }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["purchases"] });
+      show("Broker fee payment status updated!", "success");
+    },
+    onError: (err: any) => show("Error updating broker fee: " + err.message, "error"),
+  });
+
   const filteredPurchases = useMemo(() => {
     let result = [...purchases];
     if (supplierFilter !== "all") {
       result = result.filter(
         (p) => (p.supplier_name || "").trim().toLowerCase() === supplierFilter.toLowerCase()
       );
+    }
+    if (paymentStatusFilter !== "all") {
+      if (paymentStatusFilter === "pending") {
+        result = result.filter((p) => (p.balance_payable || 0) > 0 || p.payment_status !== "cleared");
+      } else if (paymentStatusFilter === "cleared") {
+        result = result.filter((p) => (p.balance_payable || 0) <= 0 || p.payment_status === "cleared");
+      }
+    }
+    if (brokerageFilter !== "all") {
+      if (brokerageFilter === "pending") {
+        result = result.filter((p) => !p.brokerage_paid && (p.brokerage_amount || 0) > 0);
+      } else if (brokerageFilter === "paid") {
+        result = result.filter((p) => p.brokerage_paid && (p.brokerage_amount || 0) > 0);
+      }
     }
     if (searchTerm.trim()) {
       const q = searchTerm.toLowerCase();
@@ -104,16 +177,20 @@ export default function Purchases() {
       );
     }
     return result.sort((a, b) => b.date.localeCompare(a.date));
-  }, [purchases, supplierFilter, searchTerm]);
+  }, [purchases, supplierFilter, paymentStatusFilter, brokerageFilter, searchTerm]);
 
   const totalProcurementCost = purchases.reduce((sum, p) => sum + (p.total_cost || 0), 0);
   const totalPaid = purchases.reduce((sum, p) => sum + (p.paid_amount || 0), 0);
   const totalPayables = purchases.reduce((sum, p) => sum + (p.balance_payable || 0), 0);
 
+  const totalBrokerage = purchases.reduce((sum, p) => sum + (p.brokerage_amount || 0), 0);
+  const paidBrokerage = purchases.reduce((sum, p) => sum + (p.brokerage_paid_amount || (p.brokerage_paid ? (p.brokerage_amount || 0) : 0)), 0);
+  const pendingBrokerage = purchases.reduce((sum, p) => sum + (p.brokerage_balance_due !== undefined ? p.brokerage_balance_due : (p.brokerage_paid ? 0 : (p.brokerage_amount || 0))), 0);
+
   const openPaymentModal = (p: GemPurchase) => {
     setPaymentModalPurchase(p);
     setPaymentDate(new Date().toISOString().slice(0, 10));
-    setPaymentAmount(p.balance_payable);
+    setPaymentAmount(Math.max(0, p.balance_payable));
     setPaymentMode("Bank Wire / NEFT");
     setPaymentNote(`Installment for ${p.purchase_no}`);
   };
@@ -126,6 +203,12 @@ export default function Purchases() {
       return;
     }
 
+    const bal = paymentModalPurchase.balance_payable;
+    if (paymentAmount > bal) {
+      show(`Payment amount (${formatINR(paymentAmount)}) cannot exceed remaining balance payable of ${formatINR(bal)}`, "error");
+      return;
+    }
+
     addPaymentMutation.mutate({
       id: paymentModalPurchase.id,
       payload: {
@@ -133,6 +216,45 @@ export default function Purchases() {
         amount: paymentAmount,
         mode: paymentMode,
         note: paymentNote.trim(),
+      },
+    });
+  };
+
+  const openBrokerPaymentModal = (p: GemPurchase) => {
+    setBrokerPaymentPurchase(p);
+    setBrokerPayDate(new Date().toISOString().slice(0, 10));
+    const totalBrk = Number(p.brokerage_amount) || 0;
+    const paidBrk = (p.broker_payments || []).reduce((sum, bp) => sum + (Number(bp.amount) || 0), 0);
+    const balBrk = Math.max(0, totalBrk - paidBrk);
+    setBrokerPayAmount(balBrk);
+    setBrokerPayMode("Bank Wire / NEFT");
+    setBrokerPayNote(`Broker fee installment for ${p.purchase_no}`);
+  };
+
+  const handleBrokerPaymentSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!brokerPaymentPurchase) return;
+    if (brokerPayAmount <= 0) {
+      show("Please enter a valid broker payment amount", "warning");
+      return;
+    }
+
+    const totalBrk = Number(brokerPaymentPurchase.brokerage_amount) || 0;
+    const paidBrk = (brokerPaymentPurchase.broker_payments || []).reduce((sum, bp) => sum + (Number(bp.amount) || 0), 0);
+    const balBrk = Math.max(0, totalBrk - paidBrk);
+
+    if (brokerPayAmount > balBrk) {
+      show(`Payment amount (${formatINR(brokerPayAmount)}) cannot exceed remaining broker balance due of ${formatINR(balBrk)}`, "error");
+      return;
+    }
+
+    addBrokerPaymentMutation.mutate({
+      id: brokerPaymentPurchase.id,
+      payload: {
+        date: brokerPayDate,
+        amount: brokerPayAmount,
+        mode: brokerPayMode,
+        note: brokerPayNote.trim(),
       },
     });
   };
@@ -225,9 +347,22 @@ export default function Purchases() {
             Pending balance payments across suppliers
           </div>
         </div>
+
+        <div className="gem-kpi-card" style={{ borderTop: "3px solid #8b5cf6" }}>
+          <div style={{ fontSize: 11, color: "var(--muted)", textTransform: "uppercase" }}>
+            Broker Fees ({formatINR(totalBrokerage)})
+          </div>
+          <div style={{ fontSize: 18, fontWeight: 900, display: "flex", gap: 10, alignItems: "center", marginTop: 2 }}>
+            <span style={{ color: "#10b981", fontSize: 15 }}>✓ Paid: {formatINR(paidBrokerage)}</span>
+            <span style={{ color: "#ef4444", fontSize: 15 }}>⏳ Pend: {formatINR(pendingBrokerage)}</span>
+          </div>
+          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>
+            Middleman broker commission tracking
+          </div>
+        </div>
       </div>
 
-      {/* Search & Supplier Filter */}
+      {/* Search & Multi-Filters */}
       <div
         className="card"
         style={{
@@ -238,7 +373,7 @@ export default function Purchases() {
           flexWrap: "wrap",
         }}
       >
-        <div style={{ position: "relative", minWidth: 280, flex: 1 }}>
+        <div style={{ position: "relative", minWidth: 260, flex: 1 }}>
           <span
             style={{
               position: "absolute",
@@ -260,32 +395,67 @@ export default function Purchases() {
           />
         </div>
 
-        {/* Supplier Filter Dropdown */}
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <label style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)" }}>Filter by Supplier:</label>
+        {/* Payment Status Filter */}
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <label style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)" }}>Payment:</label>
           <select
             className="select"
-            style={{ minWidth: 200, fontSize: 12 }}
+            style={{ minWidth: 150, fontSize: 12 }}
+            value={paymentStatusFilter}
+            onChange={(e) => setPaymentStatusFilter(e.target.value as any)}
+          >
+            <option value="all">💳 All Payments</option>
+            <option value="pending">⏳ Pending Payment</option>
+            <option value="cleared">✓ Complete Payment</option>
+          </select>
+        </div>
+
+        {/* Broker Fees Filter */}
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <label style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)" }}>Broker Fees:</label>
+          <select
+            className="select"
+            style={{ minWidth: 150, fontSize: 12 }}
+            value={brokerageFilter}
+            onChange={(e) => setBrokerageFilter(e.target.value as any)}
+          >
+            <option value="all">🤝 All Broker Deals</option>
+            <option value="pending">⏳ Pending Broker Fees</option>
+            <option value="paid">✓ Paid Broker Fees</option>
+          </select>
+        </div>
+
+        {/* Supplier Filter Dropdown */}
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <label style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)" }}>Supplier:</label>
+          <select
+            className="select"
+            style={{ minWidth: 180, fontSize: 12 }}
             value={supplierFilter}
             onChange={(e) => setSupplierFilter(e.target.value)}
           >
-            <option value="all">🏢 All Suppliers ({purchases.length} Lots)</option>
+            <option value="all">🏢 All Suppliers ({purchases.length})</option>
             {uniqueSuppliers.map((sup) => (
               <option key={sup} value={sup}>
                 {sup}
               </option>
             ))}
           </select>
-          {supplierFilter !== "all" && (
-            <button
-              className="btn btn-outline btn-xs"
-              onClick={() => setSupplierFilter("all")}
-              title="Clear supplier filter"
-            >
-              ✕ Clear
-            </button>
-          )}
         </div>
+
+        {(supplierFilter !== "all" || paymentStatusFilter !== "all" || brokerageFilter !== "all") && (
+          <button
+            className="btn btn-outline btn-xs"
+            onClick={() => {
+              setSupplierFilter("all");
+              setPaymentStatusFilter("all");
+              setBrokerageFilter("all");
+            }}
+            title="Reset all filters"
+          >
+            ✕ Reset Filters
+          </button>
+        )}
       </div>
 
       {/* Purchases Table */}
@@ -311,96 +481,244 @@ export default function Purchases() {
                   <th>Lot Ref</th>
                   <th>Packets Created</th>
                   <th>Middleman Broker</th>
+                  <th>Broker Payment</th>
                   <th>Credit Terms</th>
                   <th style={{ textAlign: "right" }}>Total Cost</th>
                   <th style={{ textAlign: "right" }}>Paid</th>
                   <th style={{ textAlign: "right" }}>Balance Due</th>
-                  <th style={{ textAlign: "center" }}>Status</th>
+                  <th style={{ textAlign: "center" }}>Status & Supplier Pay</th>
                   <th style={{ textAlign: "right" }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {filteredPurchases.map((p) => (
-                  <tr key={p.id}>
-                    <td>
-                      <span style={{ fontWeight: 800, color: "var(--primary)" }}>
-                        {p.purchase_no}
-                      </span>
-                    </td>
-                    <td>{shortDate(p.date)}</td>
-                    <td>
-                      <div style={{ fontWeight: 700 }}>{p.supplier_name}</div>
-                      {p.supplier_city && (
-                        <div style={{ fontSize: 11, color: "var(--muted)" }}>
-                          {p.supplier_city}
-                        </div>
-                      )}
-                    </td>
-                    <td>
-                      <span style={{ color: "var(--muted)" }}>{p.lot_ref || "—"}</span>
-                    </td>
-                    <td>
-                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap", maxWidth: 220 }}>
-                        {p.items?.map((it, idx) => (
-                          <span
-                            key={idx}
-                            style={{
-                              background: "rgba(16, 185, 129, 0.1)",
-                              color: "#059669",
-                              border: "1px solid rgba(16, 185, 129, 0.3)",
-                              padding: "2px 6px",
-                              borderRadius: 4,
-                              fontSize: 10,
-                              fontWeight: 800,
-                            }}
-                            title={`Box: ${it.box_name || 'Vault'} • ${it.particulars} • ${it.pieces || 1} pcs`}
-                          >
-                            {it.packet_number} ({it.weight}ct)
+                {filteredPurchases.map((p) => {
+                  const totalBrk = p.brokerage_amount || 0;
+                  const paidBrk = p.brokerage_paid_amount || (p.brokerage_paid ? totalBrk : 0) || 0;
+                  const balBrk = p.brokerage_balance_due !== undefined ? p.brokerage_balance_due : Math.max(0, totalBrk - paidBrk);
+                  const isBrkPaid = balBrk <= 0 && (paidBrk > 0 || p.brokerage_paid);
+                  const isBrkPartial = paidBrk > 0 && balBrk > 0;
+
+                  return (
+                    <tr key={p.id}>
+                      <td>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                          <span style={{ fontWeight: 800, color: "var(--primary)" }}>
+                            {p.purchase_no}
                           </span>
-                        ))}
-                      </div>
-                    </td>
-                    <td>
-                      {p.broker_name ? (
-                        <div>
-                          <div style={{ fontWeight: 700, fontSize: 11 }}>{p.broker_name}</div>
-                          <div style={{ fontSize: 10, color: "var(--muted)" }}>
-                            {p.brokerage_type === "percent" ? `${p.brokerage_rate}%` : "Manual"} (₹{p.brokerage_amount || 0})
-                            {p.brokerage_paid && <span style={{ color: "#10b981", marginLeft: 4 }}>✓ Paid</span>}
-                          </div>
-                        </div>
-                      ) : (
-                        <span style={{ color: "var(--muted)" }}>—</span>
-                      )}
-                    </td>
-                    <td>
-                      {p.credit_days && p.credit_days > 0 ? (
-                        <div>
-                          <span style={{ fontWeight: 700, color: "var(--primary)", fontSize: 11 }}>
-                            {p.credit_days} Days
-                          </span>
-                          {p.due_date && (
-                            <div style={{ fontSize: 10, color: "var(--muted)" }}>
-                              Due: {shortDate(p.due_date)}
-                            </div>
+                          {p.status === "cancelled" && (
+                            <span
+                              style={{
+                                fontSize: 9,
+                                fontWeight: 800,
+                                background: "rgba(239, 68, 68, 0.15)",
+                                color: "#ef4444",
+                                padding: "1px 5px",
+                                borderRadius: 4,
+                                width: "fit-content",
+                              }}
+                            >
+                              [RETURNED / CANCELLED]
+                            </span>
                           )}
                         </div>
-                      ) : (
-                        <span style={{ fontSize: 11, color: "var(--muted)" }}>Immediate</span>
-                      )}
-                    </td>
-                    <td style={{ textAlign: "right", fontWeight: 800 }}>
-                      {formatINR(p.total_cost)}
-                    </td>
-                    <td style={{ textAlign: "right", color: "var(--success)", fontWeight: 700 }}>
-                      {formatINR(p.paid_amount)}
-                    </td>
-                    <td style={{ textAlign: "right", color: p.balance_payable > 0 ? "#ef4444" : "var(--muted)", fontWeight: 800 }}>
-                      {formatINR(p.balance_payable)}
-                    </td>
-                    <td style={{ textAlign: "center" }}>
-                      <PayBadge status={p.payment_status} />
-                    </td>
+                      </td>
+                      <td>{shortDate(p.date)}</td>
+                      <td>
+                        <div style={{ fontWeight: 700 }}>{p.supplier_name}</div>
+                        {p.supplier_city && (
+                          <div style={{ fontSize: 11, color: "var(--muted)" }}>
+                            {p.supplier_city}
+                          </div>
+                        )}
+                      </td>
+                      <td>
+                        <span style={{ color: "var(--muted)" }}>{p.lot_ref || "—"}</span>
+                      </td>
+                      <td>
+                        <div style={{ display: "flex", gap: 4, flexWrap: "wrap", maxWidth: 220 }}>
+                          {p.items?.map((it, idx) => (
+                            <span
+                              key={idx}
+                              style={{
+                                background: "rgba(16, 185, 129, 0.1)",
+                                color: "#059669",
+                                border: "1px solid rgba(16, 185, 129, 0.3)",
+                                padding: "2px 6px",
+                                borderRadius: 4,
+                                fontSize: 10,
+                                fontWeight: 800,
+                              }}
+                              title={`Box: ${it.box_name || 'Vault'} • ${it.particulars} • ${it.is_uncountable ? 'Bulk' : `${it.pieces !== undefined ? it.pieces : 1} pcs`}`}
+                            >
+                              {it.packet_number} ({it.weight}ct)
+                            </span>
+                          ))}
+                        </div>
+                      </td>
+                      <td>
+                        {(p.broker_name || totalBrk > 0) ? (
+                          <div>
+                            <div style={{ fontWeight: 700, fontSize: 11 }}>{p.broker_name || "Middleman Broker"}</div>
+                            <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2 }}>
+                              {p.brokerage_type === "percent" ? `${p.brokerage_rate}%` : "Manual"} (₹{totalBrk.toLocaleString("en-IN")})
+                            </div>
+                            {p.broker_phone && (
+                              <div style={{ fontSize: 10, color: "var(--muted)" }}>📞 {p.broker_phone}</div>
+                            )}
+                          </div>
+                        ) : (
+                          <span style={{ color: "var(--muted)" }}>—</span>
+                        )}
+                      </td>
+
+                      {/* New Dedicated Column: Broker Payment */}
+                      <td style={{ minWidth: 160 }}>
+                        {(p.broker_name || totalBrk > 0) ? (
+                          <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 4, justifyContent: "space-between" }}>
+                              <span
+                                className="badge"
+                                style={{
+                                  fontSize: 9,
+                                  fontWeight: 800,
+                                  padding: "1px 5px",
+                                  background: isBrkPaid ? "rgba(16, 185, 129, 0.15)" : isBrkPartial ? "rgba(245, 158, 11, 0.15)" : "rgba(107, 114, 128, 0.15)",
+                                  color: isBrkPaid ? "#10b981" : isBrkPartial ? "#d97706" : "#6b7280",
+                                  border: `1px solid ${isBrkPaid ? "rgba(16, 185, 129, 0.3)" : isBrkPartial ? "rgba(245, 158, 11, 0.3)" : "rgba(107, 114, 128, 0.3)"}`,
+                                }}
+                              >
+                                {isBrkPaid ? "✓ Paid" : isBrkPartial ? "🔶 Partial" : "⏳ Pending"}
+                              </span>
+                              <span style={{ fontSize: 10, fontWeight: 700, color: "var(--on-surface)" }}>
+                                {formatINR(paidBrk)}
+                              </span>
+                            </div>
+
+                            {balBrk > 0 && (
+                              <div style={{ fontSize: 10, color: "#ef4444", fontWeight: 700, textAlign: "right" }}>
+                                Left: {formatINR(balBrk)}
+                              </div>
+                            )}
+
+                            <div style={{ display: "flex", gap: 4, marginTop: 2 }}>
+                              <button
+                                type="button"
+                                className="btn btn-outline btn-xs"
+                                style={{
+                                  fontSize: 9,
+                                  padding: "2px 5px",
+                                  height: 20,
+                                  color: "var(--primary)",
+                                  borderColor: "var(--primary)",
+                                  fontWeight: 700,
+                                }}
+                                onClick={() => openBrokerPaymentModal(p)}
+                                title="Record partial or full payment to broker"
+                              >
+                                💳 Pay Broker
+                              </button>
+
+                              {!isBrkPaid && (
+                                <button
+                                  type="button"
+                                  className="btn btn-ghost btn-xs"
+                                  style={{
+                                    fontSize: 9,
+                                    padding: "2px 5px",
+                                    height: 20,
+                                    color: "var(--success)",
+                                    fontWeight: 700,
+                                    background: "rgba(16, 185, 129, 0.1)",
+                                  }}
+                                  onClick={() => markBrokerFullPaymentMutation.mutate({ id: p.id })}
+                                  title="Mark full broker fee paid in 1-click"
+                                >
+                                  ✓ Full
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ) : (
+                          <span style={{ color: "var(--muted)" }}>—</span>
+                        )}
+                      </td>
+
+                      <td>
+                        {p.credit_days && p.credit_days > 0 ? (
+                          <div>
+                            <span style={{ fontWeight: 700, color: "var(--primary)", fontSize: 11 }}>
+                              {p.credit_days} Days
+                            </span>
+                            {p.due_date && (
+                              <div style={{ fontSize: 10, color: "var(--muted)" }}>
+                                Due: {shortDate(p.due_date)}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <span style={{ fontSize: 11, color: "var(--muted)" }}>Immediate</span>
+                        )}
+                      </td>
+                      <td style={{ textAlign: "right", fontWeight: 800 }}>
+                        {formatINR(p.total_cost)}
+                      </td>
+                      <td style={{ textAlign: "right", color: "var(--success)", fontWeight: 700 }}>
+                        {formatINR(p.paid_amount)}
+                      </td>
+                      <td style={{ textAlign: "right", color: p.balance_payable > 0 ? "#ef4444" : "var(--muted)", fontWeight: 800 }}>
+                        {formatINR(p.balance_payable)}
+                      </td>
+
+                      {/* Status Column with Supplier Partial & Full Payment Controls */}
+                      <td style={{ textAlign: "center", minWidth: 140 }}>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 3, alignItems: "center" }}>
+                          <PayBadge status={p.payment_status} />
+                          {p.balance_payable > 0 ? (
+                            <div style={{ display: "flex", gap: 3, marginTop: 2 }}>
+                              <button
+                                type="button"
+                                className="btn btn-outline btn-xs"
+                                style={{
+                                  fontSize: 9,
+                                  padding: "2px 5px",
+                                  height: 20,
+                                  color: "#059669",
+                                  borderColor: "rgba(16, 185, 129, 0.4)",
+                                  fontWeight: 700,
+                                }}
+                                onClick={() => openPaymentModal(p)}
+                                title="Record partial payment to supplier"
+                              >
+                                💳 Pay Supplier
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-ghost btn-xs"
+                                style={{
+                                  fontSize: 9,
+                                  padding: "2px 5px",
+                                  height: 20,
+                                  color: "#059669",
+                                  fontWeight: 700,
+                                  background: "rgba(16, 185, 129, 0.1)",
+                                }}
+                                onClick={() => {
+                                  if (window.confirm(`Mark full balance of ${formatINR(p.balance_payable)} paid for voucher ${p.purchase_no}?`)) {
+                                    markFullPaymentMutation.mutate({ id: p.id });
+                                  }
+                                }}
+                                title="Mark full supplier payment cleared"
+                              >
+                                ✓ Full
+                              </button>
+                            </div>
+                          ) : (
+                            <span style={{ fontSize: 9, color: "var(--success)", fontWeight: 700 }}>
+                              ✓ Cleared
+                            </span>
+                          )}
+                        </div>
+                      </td>
                     <td style={{ textAlign: "right" }}>
                       <div style={{ display: "flex", gap: 4, justifyContent: "flex-end", alignItems: "center" }}>
                         {p.balance_payable > 0 && (
@@ -435,22 +753,39 @@ export default function Purchases() {
                         >
                           ✏️
                         </button>
+                        {p.status !== "cancelled" && (
+                          <button
+                            className="btn btn-ghost btn-xs"
+                            style={{ color: "#d97706" }}
+                            onClick={() => {
+                              const reason = window.prompt(
+                                `Cancel & return purchase ${p.purchase_no} to supplier ${p.supplier_name}?\n\nThis will withdraw all associated packets from vault inventory while keeping this purchase record preserved for your cross-reference.\n\nEnter return note (optional):`
+                              );
+                              if (reason !== null) {
+                                cancelPurchaseMutation.mutate({ id: p.id, reason });
+                              }
+                            }}
+                            title="Cancel Purchase & Return to Supplier"
+                          >
+                            ↩️
+                          </button>
+                        )}
                         <button
                           className="btn btn-ghost btn-xs"
                           style={{ color: "var(--danger)" }}
                           onClick={() => {
-                            if (window.confirm(`Delete purchase record ${p.purchase_no}?`)) {
+                            if (window.confirm(`Delete purchase record ${p.purchase_no}? This will also delete any packets created by this purchase from vault stock.`)) {
                               deletePurchaseMutation.mutate(p.id);
                             }
                           }}
-                          title="Delete Purchase"
+                          title="Delete Purchase & Remove Stock"
                         >
                           🗑️
                         </button>
                       </div>
                     </td>
                   </tr>
-                ))}
+                )})}
               </tbody>
             </table>
           </div>
@@ -558,6 +893,40 @@ export default function Purchases() {
               </div>
             )}
 
+            {/* Settled / Overpayment Alerts */}
+            {paymentModalPurchase.balance_payable <= 0 && (
+              <div
+                style={{
+                  padding: "8px 12px",
+                  background: "rgba(16, 185, 129, 0.1)",
+                  border: "1px solid rgba(16, 185, 129, 0.3)",
+                  borderRadius: 6,
+                  color: "#065f46",
+                  fontSize: 12,
+                  fontWeight: 700,
+                  marginBottom: 10,
+                }}
+              >
+                ✓ Supplier Account is Fully Settled (₹0 Balance Payable)
+              </div>
+            )}
+            {paymentAmount > paymentModalPurchase.balance_payable && (
+              <div
+                style={{
+                  padding: "8px 12px",
+                  background: "#fef2f2",
+                  border: "1px solid #f87171",
+                  borderRadius: 6,
+                  color: "#b91c1c",
+                  fontSize: 12,
+                  fontWeight: 700,
+                  marginBottom: 10,
+                }}
+              >
+                ⚠️ Error: Payment amount ({formatINR(paymentAmount)}) cannot exceed remaining balance payable of {formatINR(paymentModalPurchase.balance_payable)}!
+              </div>
+            )}
+
             {/* Form */}
             <form onSubmit={handlePaymentSubmit} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
@@ -579,6 +948,7 @@ export default function Purchases() {
                     required
                     min="1"
                     max={paymentModalPurchase.balance_payable}
+                    disabled={paymentModalPurchase.balance_payable <= 0}
                     className="input"
                     value={paymentAmount || ""}
                     onChange={(e) => setPaymentAmount(parseFloat(e.target.value) || 0)}
@@ -621,7 +991,7 @@ export default function Purchases() {
                       markFullPaymentMutation.mutate({ id: paymentModalPurchase.id });
                     }
                   }}
-                  disabled={markFullPaymentMutation.isPending}
+                  disabled={markFullPaymentMutation.isPending || paymentModalPurchase.balance_payable <= 0}
                 >
                   ✓ Pay Full Remaining Balance
                 </button>
@@ -639,9 +1009,243 @@ export default function Purchases() {
                 <button
                   type="submit"
                   className="btn btn-primary btn-sm"
-                  disabled={addPaymentMutation.isPending}
+                  disabled={
+                    addPaymentMutation.isPending ||
+                    paymentModalPurchase.balance_payable <= 0 ||
+                    paymentAmount > paymentModalPurchase.balance_payable
+                  }
                 >
                   {addPaymentMutation.isPending ? "Recording..." : "Save Installment"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Record Broker Payment */}
+      {brokerPaymentPurchase && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.65)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+            padding: 16,
+          }}
+          onClick={() => setBrokerPaymentPurchase(null)}
+        >
+          <div
+            className="card"
+            style={{
+              width: "100%",
+              maxWidth: 500,
+              padding: 24,
+              display: "flex",
+              flexDirection: "column",
+              gap: 16,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+              <div>
+                <h2 style={{ fontSize: 18, fontWeight: 900, margin: 0, display: "flex", alignItems: "center", gap: 8 }}>
+                  <span>🤝</span> Record Middleman Broker Payment
+                </h2>
+                <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>
+                  Voucher: <strong>{brokerPaymentPurchase.purchase_no}</strong> • Broker: <strong>{brokerPaymentPurchase.broker_name || "Middleman Broker"}</strong>
+                </div>
+              </div>
+              <button className="btn btn-ghost btn-xs" onClick={() => setBrokerPaymentPurchase(null)}>
+                ✕
+              </button>
+            </div>
+
+            {/* Balances summary */}
+            {(() => {
+              const totalBrk = Number(brokerPaymentPurchase.brokerage_amount) || 0;
+              const paidBrk = (brokerPaymentPurchase.broker_payments || []).reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+              const balBrk = Math.max(0, totalBrk - paidBrk);
+              const isOverpaid = brokerPayAmount > balBrk;
+              const isAlreadySettled = balBrk <= 0;
+
+              return (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr 1fr 1fr",
+                      gap: 8,
+                      background: "var(--surface-sunken)",
+                      padding: 12,
+                      borderRadius: 8,
+                      textAlign: "center",
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontSize: 10.5, color: "var(--muted)" }}>Total Brokerage</div>
+                      <div style={{ fontSize: 14, fontWeight: 800 }}>{formatINR(totalBrk)}</div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 10.5, color: "var(--muted)" }}>Already Paid</div>
+                      <div style={{ fontSize: 14, fontWeight: 800, color: "#10b981" }}>{formatINR(paidBrk)}</div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 10.5, color: "var(--muted)" }}>Remaining Due</div>
+                      <div style={{ fontSize: 14, fontWeight: 800, color: "#ef4444" }}>{formatINR(balBrk)}</div>
+                    </div>
+                  </div>
+
+                  {isAlreadySettled && (
+                    <div
+                      style={{
+                        padding: "8px 12px",
+                        background: "rgba(16, 185, 129, 0.1)",
+                        border: "1px solid rgba(16, 185, 129, 0.3)",
+                        borderRadius: 6,
+                        color: "#065f46",
+                        fontSize: 12,
+                        fontWeight: 700,
+                      }}
+                    >
+                      ✓ Middleman Brokerage Fee is Already Fully Settled (₹0 Due)
+                    </div>
+                  )}
+
+                  {isOverpaid && (
+                    <div
+                      style={{
+                        padding: "8px 12px",
+                        background: "#fef2f2",
+                        border: "1px solid #f87171",
+                        borderRadius: 6,
+                        color: "#b91c1c",
+                        fontSize: 12,
+                        fontWeight: 700,
+                      }}
+                    >
+                      ⚠️ Error: Payment amount ({formatINR(brokerPayAmount)}) cannot exceed remaining broker balance due of {formatINR(balBrk)}!
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
+            {/* Form */}
+            <form onSubmit={handleBrokerPaymentSubmit} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <div>
+                  <label className="label" style={{ fontSize: 11 }}>Payment Date*</label>
+                  <input
+                    type="date"
+                    required
+                    className="input"
+                    value={brokerPayDate}
+                    onChange={(e) => setBrokerPayDate(e.target.value)}
+                  />
+                </div>
+
+                <div>
+                  <label className="label" style={{ fontSize: 11 }}>Payment Amount (₹)*</label>
+                  <input
+                    type="number"
+                    required
+                    min="1"
+                    max={(() => {
+                      const totalBrk = Number(brokerPaymentPurchase.brokerage_amount) || 0;
+                      const paidBrk = (brokerPaymentPurchase.broker_payments || []).reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+                      return Math.max(0, totalBrk - paidBrk);
+                    })()}
+                    disabled={(() => {
+                      const totalBrk = Number(brokerPaymentPurchase.brokerage_amount) || 0;
+                      const paidBrk = (brokerPaymentPurchase.broker_payments || []).reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+                      return Math.max(0, totalBrk - paidBrk) <= 0;
+                    })()}
+                    className="input"
+                    value={brokerPayAmount || ""}
+                    onChange={(e) => setBrokerPayAmount(parseFloat(e.target.value) || 0)}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="label" style={{ fontSize: 11 }}>Payment Mode</label>
+                <select
+                  className="select"
+                  value={brokerPayMode}
+                  onChange={(e) => setBrokerPayMode(e.target.value)}
+                >
+                  <option value="Bank Wire / NEFT">Bank Wire / NEFT / RTGS</option>
+                  <option value="Cash">Cash</option>
+                  <option value="Cheque">Cheque</option>
+                  <option value="UPI">UPI</option>
+                  <option value="Angadia">Angadia</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="label" style={{ fontSize: 11 }}>Reference / Note</label>
+                <input
+                  type="text"
+                  placeholder="e.g. UTR / Broker payout receipt"
+                  className="input"
+                  value={brokerPayNote}
+                  onChange={(e) => setBrokerPayNote(e.target.value)}
+                />
+              </div>
+
+              <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                <button
+                  type="button"
+                  className="btn btn-outline btn-sm"
+                  style={{ color: "var(--success)" }}
+                  onClick={() => {
+                    const totalBrk = Number(brokerPaymentPurchase.brokerage_amount) || 0;
+                    const paidBrk = (brokerPaymentPurchase.broker_payments || []).reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+                    const balBrk = Math.max(0, totalBrk - paidBrk);
+                    if (window.confirm(`Mark full remaining broker fee of ${formatINR(balBrk)} paid for voucher ${brokerPaymentPurchase.purchase_no}?`)) {
+                      markBrokerFullPaymentMutation.mutate({ id: brokerPaymentPurchase.id });
+                    }
+                  }}
+                  disabled={
+                    markBrokerFullPaymentMutation.isPending ||
+                    (() => {
+                      const totalBrk = Number(brokerPaymentPurchase.brokerage_amount) || 0;
+                      const paidBrk = (brokerPaymentPurchase.broker_payments || []).reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+                      return Math.max(0, totalBrk - paidBrk) <= 0;
+                    })()
+                  }
+                >
+                  ✓ Settle Full Broker Fee
+                </button>
+
+                <div style={{ flex: 1 }} />
+
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setBrokerPaymentPurchase(null)}
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="submit"
+                  className="btn btn-primary btn-sm"
+                  disabled={
+                    addBrokerPaymentMutation.isPending ||
+                    (() => {
+                      const totalBrk = Number(brokerPaymentPurchase.brokerage_amount) || 0;
+                      const paidBrk = (brokerPaymentPurchase.broker_payments || []).reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+                      const balBrk = Math.max(0, totalBrk - paidBrk);
+                      return balBrk <= 0 || brokerPayAmount > balBrk;
+                    })()
+                  }
+                >
+                  {addBrokerPaymentMutation.isPending ? "Recording..." : "Save Broker Payment"}
                 </button>
               </div>
             </form>

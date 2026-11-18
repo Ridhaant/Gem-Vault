@@ -1,0 +1,206 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 420" width="100%" height="100%">
+  <defs>
+    <!-- Background Gradients -->
+    <radialGradient id="bgGlow" cx="50%" cy="45%" r="65%">
+      <stop offset="0%" stop-color="#064e3b" stop-opacity="0.85"/>
+      <stop offset="45%" stop-color="#022c22" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#030712" stop-opacity="1"/>
+    </radialGradient>
+
+    <radialGradient id="gemAura" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#34d399" stop-opacity="0.5"/>
+      <stop offset="50%" stop-color="#10b981" stop-opacity="0.25"/>
+      <stop offset="100%" stop-color="#059669" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Shimmer Sweeping Beam -->
+    <linearGradient id="shimmerBeam" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="45%" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="50%" stop-color="#ffffff" stop-opacity="0.9"/>
+      <stop offset="55%" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+      <animateTransform
+        attributeName="gradientTransform"
+        type="translate"
+        values="-1,-1; 1,1; -1,-1"
+        dur="4s"
+        repeatCount="indefinite"
+      />
+    </linearGradient>
+
+    <!-- Facet Gradients -->
+    <linearGradient id="facetTop" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a7f3d0"/>
+      <stop offset="100%" stop-color="#34d399"/>
+    </linearGradient>
+    <linearGradient id="facetLeft" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#10b981"/>
+      <stop offset="100%" stop-color="#047857"/>
+    </linearGradient>
+    <linearGradient id="facetRight" x1="100%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#34d399"/>
+      <stop offset="100%" stop-color="#065f46"/>
+    </linearGradient>
+    <linearGradient id="facetBottom" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#059669"/>
+      <stop offset="100%" stop-color="#022c22"/>
+    </linearGradient>
+
+    <!-- Glow Filter -->
+    <filter id="neonGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <filter id="superGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="16" result="blur2"/>
+      <feGaussianBlur stdDeviation="8" result="blur1"/>
+      <feMerge>
+        <feMergeNode in="blur2"/>
+        <feMergeNode in="blur1"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <style>
+    .grid-line { stroke: rgba(16, 185, 129, 0.12); stroke-width: 1; }
+    .sparkle { animation: pulse 2.5s infinite ease-in-out; }
+    @keyframes pulse {
+      0%, 100% { opacity: 0.2; transform: scale(0.8); }
+      50% { opacity: 1; transform: scale(1.3); }
+    }
+    .gem-float {
+      animation: float 5s ease-in-out infinite;
+    }
+    @keyframes float {
+      0%, 100% { transform: translateY(0px) rotate(0deg); }
+      50% { transform: translateY(-12px) rotate(1.5deg); }
+    }
+  </style>
+
+  <!-- Deep Velvet / Vault Background -->
+  <rect width="1000" height="420" fill="url(#bgGlow)"/>
+
+  <!-- Perspective Floor Grid (3D Cyber-Vault) -->
+  <g opacity="0.6">
+    <line x1="0" y1="360" x2="1000" y2="360" class="grid-line"/>
+    <line x1="0" y1="380" x2="1000" y2="380" class="grid-line" stroke-width="1.5"/>
+    <line x1="0" y1="400" x2="1000" y2="400" class="grid-line" stroke-width="2"/>
+    <!-- Angled grid rays radiating towards vanishing point (500, 240) -->
+    <line x1="500" y1="240" x2="-200" y2="420" class="grid-line"/>
+    <line x1="500" y1="240" x2="0" y2="420" class="grid-line"/>
+    <line x1="500" y1="240" x2="200" y2="420" class="grid-line"/>
+    <line x1="500" y1="240" x2="400" y2="420" class="grid-line"/>
+    <line x1="500" y1="240" x2="600" y2="420" class="grid-line"/>
+    <line x1="500" y1="240" x2="800" y2="420" class="grid-line"/>
+    <line x1="500" y1="240" x2="1000" y2="420" class="grid-line"/>
+    <line x1="500" y1="240" x2="1200" y2="420" class="grid-line"/>
+  </g>
+
+  <!-- Ambient Gem Aura -->
+  <circle cx="500" cy="180" r="180" fill="url(#gemAura)" filter="url(#superGlow)"/>
+
+  <!-- Floating 3D Faceted Brilliant Emerald Gemstone -->
+  <g class="gem-float" transform="translate(0, 0)">
+    <!-- Base Shadow -->
+    <ellipse cx="500" cy="330" rx="90" ry="18" fill="rgba(0,0,0,0.4)" filter="blur(8px)"/>
+
+    <!-- Pavilion / Lower Pyramidal Facets (Bottom cone pointing down to culet) -->
+    <!-- Culet is at (500, 290) -->
+    <!-- Girdle points: (400, 190), (430, 215), (500, 225), (570, 215), (600, 190) -->
+    <polygon points="500,290 400,190 440,215" fill="#044e3b" stroke="#34d399" stroke-width="1.2"/>
+    <polygon points="500,290 440,215 500,225" fill="#065f46" stroke="#34d399" stroke-width="1.2"/>
+    <polygon points="500,290 500,225 560,215" fill="#047857" stroke="#6ee7b7" stroke-width="1.2"/>
+    <polygon points="500,290 560,215 600,190" fill="#059669" stroke="#6ee7b7" stroke-width="1.2"/>
+
+    <!-- Crown / Upper Facets -->
+    <!-- Table Octagon points: (445, 125), (475, 110), (525, 110), (555, 125), (565, 150), (545, 165), (455, 165), (435, 150) -->
+    <polygon points="445,125 475,110 525,110 555,125 565,150 545,165 455,165 435,150" fill="url(#facetTop)" stroke="#ffffff" stroke-width="1.8"/>
+
+    <!-- Star & Kite Facets (Connecting Table to Girdle) -->
+    <polygon points="445,125 475,110 450,85 410,140" fill="url(#facetLeft)" stroke="#a7f3d0" stroke-width="1"/>
+    <polygon points="475,110 525,110 500,75" fill="#6ee7b7" stroke="#ffffff" stroke-width="1.2"/>
+    <polygon points="525,110 555,125 590,140 550,85" fill="url(#facetRight)" stroke="#a7f3d0" stroke-width="1"/>
+    <polygon points="435,150 445,125 410,140 400,190" fill="#059669" stroke="#34d399" stroke-width="1.2"/>
+    <polygon points="435,150 455,165 440,215 400,190" fill="#047857" stroke="#6ee7b7" stroke-width="1.2"/>
+    <polygon points="455,165 545,165 500,225" fill="#10b981" stroke="#ffffff" stroke-width="1.5"/>
+    <polygon points="455,165 500,225 440,215" fill="#059669" stroke="#34d399" stroke-width="1.2"/>
+    <polygon points="545,165 565,150 600,190 560,215" fill="#34d399" stroke="#a7f3d0" stroke-width="1.2"/>
+    <polygon points="545,165 500,225 560,215" fill="#10b981" stroke="#ffffff" stroke-width="1.2"/>
+    <polygon points="565,150 555,125 590,140 600,190" fill="#059669" stroke="#6ee7b7" stroke-width="1.2"/>
+
+    <!-- Specular Highlight Overlay Sweep across the entire Gem -->
+    <polygon points="445,125 475,110 525,110 555,125 565,150 545,165 455,165 435,150" fill="url(#shimmerBeam)" opacity="0.8"/>
+
+    <!-- Crisp Outer Contour Lighting -->
+    <polygon points="450,85 500,75 550,85 590,140 600,190 500,290 400,190 410,140" fill="none" stroke="#6ee7b7" stroke-width="2" filter="url(#neonGlow)"/>
+
+    <!-- Prismatic Sparkles (Glowing Cross Stars) -->
+    <!-- Sparkle 1: Top Table Corner -->
+    <g transform="translate(525, 110)">
+      <path d="M 0 -14 Q 0 0 14 0 Q 0 0 0 14 Q 0 0 -14 0 Q 0 0 0 -14" fill="#ffffff" filter="url(#neonGlow)"/>
+      <circle cx="0" cy="0" r="3" fill="#ffffff"/>
+    </g>
+    <!-- Sparkle 2: Right Girdle Edge -->
+    <g transform="translate(600, 190)">
+      <path d="M 0 -10 Q 0 0 10 0 Q 0 0 0 10 Q 0 0 -10 0 Q 0 0 0 -10" fill="#a7f3d0" filter="url(#neonGlow)"/>
+    </g>
+    <!-- Sparkle 3: Left Crown -->
+    <g transform="translate(410, 140)">
+      <path d="M 0 -8 Q 0 0 8 0 Q 0 0 0 8 Q 0 0 -8 0 Q 0 0 0 -8" fill="#ffffff"/>
+    </g>
+  </g>
+
+  <!-- Typography & Badges Header -->
+  <g transform="translate(500, 340)" text-anchor="middle">
+    <!-- Main Title -->
+    <text y="0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="28" font-weight="900" fill="#ffffff" letter-spacing="4">
+      GEMVAULT <tspan fill="#34d399">CRM</tspan>
+    </text>
+
+    <!-- Subtitle -->
+    <text y="24" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13" font-weight="500" fill="#a7f3d0" letter-spacing="2">
+      AIR-GAPPED PRECIOUS STONE VAULT &amp; MULTI-BROKERAGE SUITE
+    </text>
+  </g>
+
+  <!-- 3D Hologram Floating Badges Left -->
+  <g transform="translate(80, 110)">
+    <!-- Badge 1: 0.001 Carat Math -->
+    <rect width="180" height="42" rx="10" fill="rgba(6, 78, 59, 0.65)" stroke="#10b981" stroke-width="1.5" filter="url(#neonGlow)"/>
+    <text x="20" y="26" font-family="monospace" font-size="13" font-weight="700" fill="#6ee7b7">💎 0.001 ct Precision</text>
+  </g>
+  <g transform="translate(60, 175)">
+    <!-- Badge 2: Dual-Role RBAC -->
+    <rect width="200" height="42" rx="10" fill="rgba(6, 78, 59, 0.65)" stroke="#10b981" stroke-width="1.5" filter="url(#neonGlow)"/>
+    <text x="18" y="26" font-family="monospace" font-size="13" font-weight="700" fill="#a7f3d0">🔒 RBAC Cost Masking</text>
+  </g>
+  <g transform="translate(80, 240)">
+    <!-- Badge 3: 100% Offline -->
+    <rect width="180" height="42" rx="10" fill="rgba(6, 78, 59, 0.65)" stroke="#10b981" stroke-width="1.5" filter="url(#neonGlow)"/>
+    <text x="20" y="26" font-family="monospace" font-size="13" font-weight="700" fill="#34d399">🛡️ 100% Air-Gapped</text>
+  </g>
+
+  <!-- 3D Hologram Floating Badges Right -->
+  <g transform="translate(740, 110)">
+    <!-- Badge 4: React 19 + TypeScript -->
+    <rect width="180" height="42" rx="10" fill="rgba(6, 78, 59, 0.65)" stroke="#10b981" stroke-width="1.5" filter="url(#neonGlow)"/>
+    <text x="20" y="26" font-family="monospace" font-size="13" font-weight="700" fill="#6ee7b7">⚡ React 19 + Vite</text>
+  </g>
+  <g transform="translate(740, 175)">
+    <!-- Badge 5: SQLite WAL + IndexedDB -->
+    <rect width="200" height="42" rx="10" fill="rgba(6, 78, 59, 0.65)" stroke="#10b981" stroke-width="1.5" filter="url(#neonGlow)"/>
+    <text x="18" y="26" font-family="monospace" font-size="13" font-weight="700" fill="#a7f3d0">🗄️ SQLite WAL + IDB</text>
+  </g>
+  <g transform="translate(740, 240)">
+    <!-- Badge 6: Zero-Dep QR Engine -->
+    <rect width="180" height="42" rx="10" fill="rgba(6, 78, 59, 0.65)" stroke="#10b981" stroke-width="1.5" filter="url(#neonGlow)"/>
+    <text x="20" y="26" font-family="monospace" font-size="13" font-weight="700" fill="#34d399">🏷️ Zero-Dep QR Code</text>
+  </g>
+
+</svg>

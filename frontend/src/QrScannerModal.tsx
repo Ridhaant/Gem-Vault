@@ -167,7 +167,7 @@ export function QrScannerModal({
                     <h3 style={{ margin: "4px 0 0", fontSize: 16, fontWeight: 800 }}>
                       {matchedPacket.particulars}
                     </h3>
-                    {matchedPacket.pieces > 1 && (
+                    {(matchedPacket.pieces > 1 || matchedPacket.is_uncountable) && (
                       <div
                         style={{
                           fontSize: 11,
@@ -181,7 +181,7 @@ export function QrScannerModal({
                           marginTop: 4,
                         }}
                       >
-                        📦 Parcel Lot: {matchedPacket.pieces} stones (Avg {(matchedPacket.weight / matchedPacket.pieces).toFixed(2)} cts/pc)
+                        📦 {matchedPacket.is_uncountable ? "Uncountable Bulk Parcel" : `Parcel Lot: ${matchedPacket.pieces} stones`}
                       </div>
                     )}
                   </div>

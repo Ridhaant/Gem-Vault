@@ -18,6 +18,8 @@ export default function PacketView() {
   const { show } = useToast();
   const [showQrModal, setShowQrModal] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [editingDate, setEditingDate] = useState(false);
+  const [tempDate, setTempDate] = useState("");
 
   // Lookup packet with local state so edits immediately reflect
   const [packet, setPacket] = useState<GemPacket | undefined>(() => (id ? getPacketByNumber(id) : undefined));
@@ -64,12 +66,11 @@ export default function PacketView() {
         mm_size: packet.mm_size || "",
       }));
     } else {
-      const avg = Number(((packet.weight || 0) / pieces).toFixed(3));
       initialDetails = Array(pieces).fill(null).map((_, idx) => ({
         id: `stone-${idx + 1}-${Date.now()}`,
         variety: packet.particulars || "Gemstone",
         shape: packet.shape || "Oval",
-        weight: avg,
+        weight: 0,
         mm_size: packet.mm_size || "",
       }));
     }
@@ -239,7 +240,11 @@ Status: ${packet.status.toUpperCase()}${stoneDetailsText}`;
   }
 
   const isMultiStone = (packet.pieces || 1) > 1 || (packet.sub_gems && packet.sub_gems.length > 0);
-  const avgCarats = packet.pieces > 1 ? (packet.weight / packet.pieces).toFixed(2) : packet.weight.toFixed(2);
+  const hasIndividualStones = Boolean(
+    (packet.stone_details && packet.stone_details.length > 0) ||
+    (packet.stone_weights && packet.stone_weights.length > 0) ||
+    (packet.sub_gems && packet.sub_gems.length > 0)
+  );
 
   return (
     <div
@@ -275,13 +280,15 @@ Status: ${packet.status.toUpperCase()}${stoneDetailsText}`;
           </div>
 
           <div style={{ display: "flex", gap: 8 }}>
-            <button
-              className="btn btn-outline btn-sm"
-              style={{ borderColor: "var(--primary)", color: "var(--primary)", fontWeight: 700 }}
-              onClick={handleOpenEditStonesModal}
-            >
-              💎 Manage Stones
-            </button>
+            {!packet.is_uncountable && (
+              <button
+                className="btn btn-outline btn-sm"
+                style={{ borderColor: "var(--primary)", color: "var(--primary)", fontWeight: 700 }}
+                onClick={handleOpenEditStonesModal}
+              >
+                💎 Manage Stones
+              </button>
+            )}
             <button className="btn btn-outline btn-sm" onClick={() => setShowQrModal(true)}>
               🏷️ QR Tag
             </button>
@@ -411,11 +418,6 @@ Status: ${packet.status.toUpperCase()}${stoneDetailsText}`;
               <div style={{ fontSize: 20, fontWeight: 900, color: "var(--on-surface)", marginTop: 2 }}>
                 {packet.weight} <span style={{ fontSize: 13, fontWeight: 600 }}>cts</span>
               </div>
-              {isMultiStone && (
-                <div style={{ fontSize: 11, color: "#0284c7", marginTop: 2 }}>
-                  Avg {avgCarats} cts/stone
-                </div>
-              )}
             </div>
 
             <div
@@ -429,8 +431,16 @@ Status: ${packet.status.toUpperCase()}${stoneDetailsText}`;
               <div style={{ fontSize: 11, color: "var(--muted)", textTransform: "uppercase", fontWeight: 700 }}>
                 Total Pieces
               </div>
-              <div style={{ fontSize: 20, fontWeight: 900, color: "var(--on-surface)", marginTop: 2 }}>
-                {packet.pieces} <span style={{ fontSize: 13, fontWeight: 600 }}>{packet.pieces === 1 ? "pc" : "pcs"}</span>
+              <div style={{ fontSize: packet.is_uncountable ? 15 : 20, fontWeight: 900, color: "var(--on-surface)", marginTop: 2 }}>
+                {packet.is_uncountable ? (
+                  <span style={{ color: "#2563eb", display: "inline-flex", alignItems: "center", gap: 4 }}>
+                    <span>📦</span> Bulk (Weight Only)
+                  </span>
+                ) : (
+                  <>
+                    {packet.pieces} <span style={{ fontSize: 13, fontWeight: 600 }}>{packet.pieces === 1 ? "pc" : "pcs"}</span>
+                  </>
+                )}
               </div>
             </div>
 
@@ -465,10 +475,71 @@ Status: ${packet.status.toUpperCase()}${stoneDetailsText}`;
                 {packet.mm_size || "Not calibrated"}
               </div>
             </div>
+
+            <div
+              style={{
+                background: "var(--surface-sunken)",
+                border: "1px solid var(--border)",
+                borderRadius: 8,
+                padding: "12px 14px",
+              }}
+            >
+              <div style={{ fontSize: 11, color: "var(--muted)", textTransform: "uppercase", fontWeight: 700, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span>Purchase Date</span>
+                {!editingDate && (
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-xs"
+                    style={{ fontSize: 10, padding: "0 4px", color: "var(--primary)" }}
+                    onClick={() => {
+                      setTempDate(packet.purchase_date || "");
+                      setEditingDate(true);
+                    }}
+                  >
+                    ✏️ Edit
+                  </button>
+                )}
+              </div>
+              {editingDate ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 4 }}>
+                  <input
+                    type="date"
+                    className="input"
+                    style={{ padding: "2px 6px", fontSize: 12, height: 26 }}
+                    value={tempDate}
+                    onChange={(e) => setTempDate(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-xs"
+                    onClick={() => {
+                      const updated = { ...packet, purchase_date: tempDate };
+                      savePacket(updated);
+                      setPacket(updated);
+                      setEditingDate(false);
+                      show("Packet purchase_date updated successfully!", "success");
+                    }}
+                  >
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-xs"
+                    onClick={() => setEditingDate(false)}
+                  >
+                    ✕
+                  </button>
+                </div>
+              ) : (
+                <div style={{ fontSize: 15, fontWeight: 800, color: "var(--on-surface)", marginTop: 2 }}>
+                  {packet.purchase_date || "Not specified"}
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Individual Stone Breakdown (Full Customization Support) */}
-          {packet.stone_details && packet.stone_details.length > 0 ? (
+          {hasIndividualStones && stoneStatuses.length > 0 ? (
             <div
               style={{
                 background: "var(--surface-sunken)",
@@ -516,6 +587,7 @@ Status: ${packet.status.toUpperCase()}${stoneDetailsText}`;
                   const isInStock = st.status === "in_stock";
                   const isApproval = st.status === "on_approval";
                   const isSold = st.status === "sold";
+                  const displayWeight = (isApproval && st.saleRef?.weight) ? st.saleRef.weight : (st.weight || 0);
                   return (
                     <div
                       key={st.id || i}
@@ -544,7 +616,7 @@ Status: ${packet.status.toUpperCase()}${stoneDetailsText}`;
                           Stone #{st.stoneNumber}
                         </span>
                         <span style={{ color: "var(--primary)", fontWeight: 900, fontSize: 13 }}>
-                          {Number(st.weight).toFixed(2)} cts
+                          {Number(displayWeight).toFixed(2)} cts
                         </span>
                       </div>
                       <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
@@ -607,53 +679,28 @@ Status: ${packet.status.toUpperCase()}${stoneDetailsText}`;
                 })}
               </div>
             </div>
-          ) : packet.stone_weights && packet.stone_weights.length > 0 ? (
+          ) : packet.is_uncountable ? (
             <div
               style={{
-                background: "var(--surface-sunken)",
-                border: "1px solid var(--border)",
+                background: "rgba(59, 130, 246, 0.05)",
+                border: "1.5px dashed rgba(59, 130, 246, 0.4)",
                 borderRadius: 8,
-                padding: 16,
+                padding: "14px 18px",
                 marginBottom: 20,
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: 8,
               }}
             >
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
-                <h3 style={{ fontSize: 14, fontWeight: 800, margin: 0, display: "flex", alignItems: "center", gap: 8 }}>
-                  <span>⚖️</span>
-                  <span>Individual Stone Weights Breakdown ({packet.stone_weights.length} Stones)</span>
-                </h3>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ fontSize: 11, color: "var(--muted)" }}>
-                    Total: {packet.weight} cts (Avg: {(packet.weight / packet.stone_weights.length).toFixed(3)} cts/pc)
-                  </span>
-                  <button
-                    type="button"
-                    className="btn btn-outline btn-xs"
-                    onClick={handleOpenEditStonesModal}
-                    style={{ fontWeight: 700, color: "var(--primary)", borderColor: "var(--primary)" }}
-                  >
-                    ✏️ Edit Stones
-                  </button>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 800, color: "#2563eb", display: "flex", alignItems: "center", gap: 6 }}>
+                  <span>📦</span> Bulk Batch / Parcel (Carat Weight Only — No Pieces)
                 </div>
-              </div>
-
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {packet.stone_weights.map((wt, i) => (
-                  <div
-                    key={i}
-                    style={{
-                      background: "var(--surface)",
-                      border: "1px solid var(--border)",
-                      padding: "4px 10px",
-                      borderRadius: 6,
-                      fontSize: 12,
-                      fontWeight: 700,
-                    }}
-                  >
-                    <span style={{ color: "var(--muted)", fontSize: 10, marginRight: 4 }}>#{i + 1}:</span>
-                    <span style={{ color: "var(--primary)" }}>{Number(wt).toFixed(2)}</span> cts
-                  </div>
-                ))}
+                <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 2 }}>
+                  This packet is tracked and sold purely by total weight ({packet.weight} {packet.unit || "cts"}). Individual stone counting and piece allocations are bypassed for bulk parcels.
+                </div>
               </div>
             </div>
           ) : (
@@ -676,7 +723,7 @@ Status: ${packet.status.toUpperCase()}${stoneDetailsText}`;
                   💎 Manage Individual & Multiple Stones
                 </div>
                 <div style={{ fontSize: 11.5, color: "var(--muted)" }}>
-                  Currently recorded as {packet.pieces || 1} {packet.pieces === 1 ? "stone" : "stones"} ({packet.weight} {packet.unit || "cts"}). Click to configure individual stone varieties, shapes, weights, or dimensions.
+                  Currently recorded as {packet.is_uncountable ? "Bulk (Uncountable)" : `${packet.pieces !== undefined ? packet.pieces : 1} ${(packet.pieces ?? 1) === 1 ? "stone" : "stones"}`} ({packet.weight} {packet.unit || "cts"}). Click to configure individual stone varieties, shapes, weights, or dimensions.
                 </div>
               </div>
               <button
@@ -881,13 +928,12 @@ Status: ${packet.status.toUpperCase()}${stoneDetailsText}`;
                       onClick={() => {
                         const cur = [...workingStoneDetails];
                         const pcs = Math.max(2, cur.length);
-                        const avg = Number(((workingWeight || packet.weight || 1) / pcs).toFixed(3));
                         while (cur.length < pcs) {
                           cur.push({
                             id: `st-${cur.length + 1}-${Math.random().toString(36).slice(2, 6)}`,
                             variety: packet.particulars || "Gemstone",
                             shape: packet.shape || "Oval",
-                            weight: avg,
+                            weight: 0,
                             mm_size: packet.mm_size || "",
                           });
                         }

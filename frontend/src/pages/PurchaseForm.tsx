@@ -1,30 +1,15 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
-import { apiGet, apiPost, apiPut } from "../api";
+import { apiGet, apiPost, apiPut, apiDelete } from "../api";
 import { Spinner } from "../ui";
 import { formatINR } from "../format";
 import type { GemPacket, GemPurchaseItem, GemPurchase, GemBuyer, GemBox } from "../types/gemstone";
-import { DEFAULT_SHAPES } from "../types/gemstone";
+import { DEFAULT_SHAPES, DEFAULT_VARIETIES } from "../types/gemstone";
 import { normalizeBoxName } from "../gemstoneStorage";
 import { useToast } from "../toast";
 
-const GEM_VARIETIES = [
-  "Emerald",
-  "Ruby",
-  "Blue Sapphire",
-  "Yellow Sapphire",
-  "Tanzanite",
-  "Diamond",
-  "Alexandrite",
-  "Tsavorite Garnet",
-  "Aquamarine",
-  "Tourmaline",
-  "Spinel",
-  "Morganite",
-  "Opal",
-  "Peridot",
-];
+const GEM_VARIETIES = DEFAULT_VARIETIES;
 
 const CREDIT_PRESETS = [
   { days: 0, label: "0d (Cash / Immediate)" },
@@ -58,6 +43,33 @@ export default function PurchaseForm() {
     queryFn: () => apiGet("/buyers"),
   });
 
+  const { data: storedSuppliers = [] } = useQuery<string[]>({
+    queryKey: ["suppliers"],
+    queryFn: () => apiGet("/suppliers"),
+  });
+
+  const { data: storedBrokers = [] } = useQuery<string[]>({
+    queryKey: ["brokers"],
+    queryFn: () => apiGet("/brokers"),
+  });
+
+  const { data: customParticulars = [] } = useQuery<string[]>({
+    queryKey: ["particulars"],
+    queryFn: () => apiGet("/particulars"),
+  });
+
+  const allSuppliers = useMemo(() => {
+    return Array.from(new Set([...savedParties.map((p) => p.name), ...storedSuppliers])).filter(Boolean);
+  }, [savedParties, storedSuppliers]);
+
+  const allBrokers = useMemo(() => {
+    return Array.from(new Set(storedBrokers)).filter(Boolean);
+  }, [storedBrokers]);
+
+  const allParticulars = useMemo(() => {
+    return Array.from(new Set([...GEM_VARIETIES, ...(Array.isArray(customParticulars) ? customParticulars : [])])).filter(Boolean);
+  }, [customParticulars]);
+
   const { data: boxes = [] } = useQuery<GemBox[]>({
     queryKey: ["boxes"],
     queryFn: () => apiGet("/boxes"),
@@ -75,7 +87,7 @@ export default function PurchaseForm() {
   }, [customShapes]);
 
   const defaultBoxName = useMemo(() => {
-    return boxes && boxes[0]?.name ? boxes[0].name : "Box 1 — Emerald Vault";
+    return boxes && boxes[0]?.name ? boxes[0].name : "Box 1";
   }, [boxes]);
 
   // Calculate starting packet index safely
@@ -128,7 +140,7 @@ const safePieces = (p: any): number => {
       shape: "Oval",
       weight: 0,
       unit: "cts",
-      pieces: 1,
+      pieces: 0,
       stone_weight: 0,
       mm_size: "",
       purchase_rate_per_unit: 0,
@@ -211,7 +223,7 @@ const safePieces = (p: any): number => {
         shape: "Oval",
         weight: 0,
         unit: "cts",
-        pieces: 1,
+        pieces: 0,
         stone_weight: 0,
         mm_size: "",
         purchase_rate_per_unit: 0,
@@ -240,53 +252,108 @@ const safePieces = (p: any): number => {
         if (i !== idx) return it;
         const updated = { ...it, [field]: value };
 
-        // Handle calibrated stones calculation & stone weights distribution
-        if (field === "pieces") {
-          const pcs = safePieces(value);
+        // Handle uncountable parcel toggle
+        if (field === "is_uncountable") {
+          const isUnc = Boolean(value);
+          updated.is_uncountable = isUnc;
+          if (isUnc) {
+            updated.pieces = 0;
+            updated.stone_weights = [];
+          }
+        }
+
+        // Handle pieces and stone weights distribution
+        if (field === "pieces" && !updated.is_uncountable) {
+          const pcs = Math.max(0, parseInt(value, 10) || 0);
           updated.pieces = pcs;
-          if (updated.stone_weights && updated.stone_weights.length > 0) {
+          if (updated.stone_weights && updated.stone_weights.length > 0 && pcs > 0) {
             const resized = [...updated.stone_weights];
             while (resized.length < pcs && resized.length < 500) {
-              const fallback = updated.stone_weight || (updated.weight > 0 ? Number((updated.weight / pcs).toFixed(3)) : 0);
+              const fallback = updated.weight > 0 ? Number((updated.weight / pcs).toFixed(3)) : 0;
               resized.push(fallback);
             }
             updated.stone_weights = resized.slice(0, pcs);
             const sum = Number(updated.stone_weights.reduce((a, b) => a + (Number(b) || 0), 0).toFixed(2));
             if (sum > 0) updated.weight = sum;
-          } else if (updated.stone_weight && updated.stone_weight > 0) {
-            updated.weight = Number((pcs * updated.stone_weight).toFixed(2));
-          } else if (updated.weight > 0 && pcs > 0) {
-            updated.stone_weight = Number((updated.weight / pcs).toFixed(3));
-          }
-        } else if (field === "stone_weight") {
-          const sw = parseFloat(value) || 0;
-          updated.stone_weight = sw;
-          if (sw > 0 && updated.pieces > 0) {
-            updated.weight = Number((updated.pieces * sw).toFixed(2));
           }
         } else if (field === "weight") {
           const w = parseFloat(value) || 0;
           updated.weight = w;
-          if (w > 0 && updated.pieces > 0) {
-            updated.stone_weight = Number((w / updated.pieces).toFixed(3));
-          }
         } else if (field === "stone_weights") {
           updated.stone_weights = value;
           const sum = Number(value.reduce((s: number, x: number) => s + (Number(x) || 0), 0).toFixed(2));
           if (sum > 0) {
             updated.weight = sum;
           }
-          if (updated.pieces > 0 && updated.weight > 0) {
-            updated.stone_weight = Number((updated.weight / updated.pieces).toFixed(3));
+        }
+
+        const curWt = updated.weight || 0;
+
+        // Rate per Carat calculations (Primary):
+        if (field === "purchase_rate_per_unit") {
+          const rate = parseFloat(value) || 0;
+          updated.purchase_rate_per_unit = rate;
+          updated.cost_price = Math.round(rate * curWt);
+          if (updated.sale_rate_per_unit === 0 || !updated.target_sale_price) {
+            updated.sale_rate_per_unit = Math.round(rate * 1.5);
+            updated.target_sale_price = Math.round(updated.sale_rate_per_unit * curWt);
+          }
+        } else if (field === "sale_rate_per_unit") {
+          const rate = parseFloat(value) || 0;
+          updated.sale_rate_per_unit = rate;
+          updated.target_sale_price = Math.round(rate * curWt);
+        } else if (field === "cost_price") {
+          const cost = parseFloat(value) || 0;
+          updated.cost_price = cost;
+          updated.purchase_rate_per_unit = curWt > 0 ? Math.round(cost / curWt) : 0;
+        } else if (field === "target_sale_price") {
+          const ask = parseFloat(value) || 0;
+          updated.target_sale_price = ask;
+          updated.sale_rate_per_unit = curWt > 0 ? Math.round(ask / curWt) : 0;
+        } else if (field === "weight" || field === "stone_weight" || field === "pieces" || field === "stone_weights" || field === "is_uncountable") {
+          if (updated.purchase_rate_per_unit > 0) {
+            updated.cost_price = Math.round(updated.purchase_rate_per_unit * curWt);
+          } else if (curWt > 0 && updated.cost_price > 0) {
+            updated.purchase_rate_per_unit = Math.round(updated.cost_price / curWt);
+          }
+          if (updated.sale_rate_per_unit > 0) {
+            updated.target_sale_price = Math.round(updated.sale_rate_per_unit * curWt);
+          } else if (curWt > 0 && updated.target_sale_price > 0) {
+            updated.sale_rate_per_unit = Math.round(updated.target_sale_price / curWt);
           }
         }
 
-        const w = updated.weight > 0 ? updated.weight : 1;
-        if (field === "cost_price" || field === "weight" || field === "stone_weight" || field === "pieces" || field === "stone_weights") {
-          updated.purchase_rate_per_unit = Math.round(updated.cost_price / w);
-        }
-        if (field === "target_sale_price" || field === "weight" || field === "stone_weight" || field === "pieces" || field === "stone_weights") {
-          updated.sale_rate_per_unit = Math.round(updated.target_sale_price / w);
+        return updated;
+      })
+    );
+  };
+
+  const handleSetStoneCategory = (
+    idx: number,
+    category: "bulk" | "no_individual_weight" | "individual_weight_added"
+  ) => {
+    setItems((prev) =>
+      prev.map((it, i) => {
+        if (i !== idx) return it;
+        const updated = { ...it, stone_category: category };
+        if (category === "bulk") {
+          updated.is_uncountable = true;
+          updated.pieces = 0;
+          updated.stone_weights = [];
+          if (expandedWeightsIdx === idx) setExpandedWeightsIdx(null);
+        } else if (category === "no_individual_weight") {
+          updated.is_uncountable = false;
+          if ((updated.pieces || 0) <= 0) updated.pieces = 1;
+          updated.stone_weights = [];
+          if (expandedWeightsIdx === idx) setExpandedWeightsIdx(null);
+        } else if (category === "individual_weight_added") {
+          updated.is_uncountable = false;
+          const pcs = Math.max(1, updated.pieces || 1);
+          updated.pieces = pcs;
+          if (!updated.stone_weights || updated.stone_weights.length === 0) {
+            updated.stone_weights = Array(pcs).fill(0);
+          }
+          setExpandedWeightsIdx(idx);
         }
         return updated;
       })
@@ -309,6 +376,7 @@ const safePieces = (p: any): number => {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["purchases"] });
       queryClient.invalidateQueries({ queryKey: ["packets"] });
+      queryClient.invalidateQueries({ queryKey: ["boxes"] });
       queryClient.invalidateQueries({ queryKey: ["analytics_overview"] });
       show(
         isEdit
@@ -319,6 +387,25 @@ const safePieces = (p: any): number => {
       navigate("/purchases");
     },
     onError: (err: any) => show("Error recording purchase: " + err.message, "error"),
+  });
+
+  const clearSuppliersMutation = useMutation({
+    mutationFn: () => apiDelete("/suppliers"),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["suppliers"] });
+      queryClient.invalidateQueries({ queryKey: ["buyers"] });
+      show("Supplier suggestions cleared!", "success");
+    },
+    onError: (err: any) => show("Error clearing suppliers: " + err.message, "error"),
+  });
+
+  const clearBrokersMutation = useMutation({
+    mutationFn: () => apiDelete("/brokers"),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["brokers"] });
+      show("Broker suggestions cleared!", "success");
+    },
+    onError: (err: any) => show("Error clearing brokers: " + err.message, "error"),
   });
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -424,7 +511,7 @@ const safePieces = (p: any): number => {
         </p>
       </div>
 
-      <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <form onSubmit={handleSubmit} autoComplete="off" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
         {/* Supplier & Voucher Info */}
         <div className="card" style={{ padding: 20, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
           <div>
@@ -432,6 +519,7 @@ const safePieces = (p: any): number => {
             <input
               type="text"
               required
+              autoComplete="off"
               className="input"
               value={purchaseNo}
               onChange={(e) => setPurchaseNo(e.target.value)}
@@ -452,27 +540,44 @@ const safePieces = (p: any): number => {
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
               <label className="label" style={{ margin: 0 }}>Supplier / Dealer / Importer Name*</label>
-              {savedParties.length > 0 && (
-                <select
-                  className="select"
-                  style={{ fontSize: 11, padding: "2px 8px", height: 26, background: "var(--surface-sunken)" }}
-                  value=""
-                  onChange={(e) => {
-                    const match = savedParties.find((b) => b.name === e.target.value);
-                    if (match) {
-                      setSupplierName(match.name);
-                      if (match.phone) setSupplierPhone(match.phone);
-                      if (match.city) setSupplierCity(match.city);
-                    }
-                  }}
-                >
-                  <option value="">⚡ Select from {savedParties.length} saved parties/dealers...</option>
-                  {savedParties.map((p) => (
-                    <option key={p.id} value={p.name}>
-                      {p.name} {p.company ? `(${p.company})` : ""} {p.city ? `• ${p.city}` : ""}
-                    </option>
-                  ))}
-                </select>
+              {allSuppliers.length > 0 && (
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <select
+                    className="select"
+                    style={{ fontSize: 11, padding: "2px 8px", height: 26, background: "var(--surface-sunken)" }}
+                    value=""
+                    onChange={(e) => {
+                      const match = savedParties.find((b) => b.name === e.target.value);
+                      if (match) {
+                        setSupplierName(match.name);
+                        if (match.phone) setSupplierPhone(match.phone);
+                        if (match.city) setSupplierCity(match.city);
+                      } else {
+                        setSupplierName(e.target.value);
+                      }
+                    }}
+                  >
+                    <option value="">⚡ Quick Pick ({allSuppliers.length} saved)...</option>
+                    {allSuppliers.map((p, idx) => (
+                      <option key={idx} value={p}>
+                        {p}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-xs"
+                    style={{ fontSize: 9, padding: "1px 5px", height: 22, color: "var(--muted)" }}
+                    title="Clear saved supplier suggestions list"
+                    onClick={() => {
+                      if (window.confirm("Clear current saved supplier suggestions? You can always type fresh supplier names.")) {
+                        clearSuppliersMutation.mutate();
+                      }
+                    }}
+                  >
+                    ✕ Clear
+                  </button>
+                </div>
               )}
             </div>
             <input
@@ -481,6 +586,7 @@ const safePieces = (p: any): number => {
               placeholder="e.g. Kagem Mining Ltd / Mogok Rough Traders"
               className="input"
               list="dealers-list"
+              autoComplete="off"
               value={supplierName}
               onChange={(e) => {
                 setSupplierName(e.target.value);
@@ -492,8 +598,8 @@ const safePieces = (p: any): number => {
               }}
             />
             <datalist id="dealers-list">
-              {savedParties.map((p) => (
-                <option key={p.id} value={p.name} />
+              {allSuppliers.map((p, pIdx) => (
+                <option key={pIdx} value={p} />
               ))}
             </datalist>
           </div>
@@ -504,6 +610,7 @@ const safePieces = (p: any): number => {
               type="text"
               placeholder="e.g. LOT-ZAM-881"
               className="input"
+              autoComplete="off"
               value={lotRef}
               onChange={(e) => setLotRef(e.target.value)}
             />
@@ -515,6 +622,7 @@ const safePieces = (p: any): number => {
               type="text"
               placeholder="+91..."
               className="input"
+              autoComplete="off"
               value={supplierPhone}
               onChange={(e) => setSupplierPhone(e.target.value)}
             />
@@ -526,6 +634,7 @@ const safePieces = (p: any): number => {
               type="text"
               placeholder="Jaipur / Bangkok / Colombo"
               className="input"
+              autoComplete="off"
               value={supplierCity}
               onChange={(e) => setSupplierCity(e.target.value)}
             />
@@ -545,14 +654,38 @@ const safePieces = (p: any): number => {
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
               <div>
-                <label className="label" style={{ fontSize: 11 }}>Broker Name</label>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                  <label className="label" style={{ fontSize: 11, margin: 0 }}>Broker Name</label>
+                  {allBrokers.length > 0 && (
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-xs"
+                      style={{ fontSize: 9, padding: "1px 5px", height: 20, color: "var(--muted)" }}
+                      title="Clear saved broker suggestions"
+                      onClick={() => {
+                        if (window.confirm("Clear all current saved broker suggestions?")) {
+                          clearBrokersMutation.mutate();
+                        }
+                      }}
+                    >
+                      ✕ Clear
+                    </button>
+                  )}
+                </div>
                 <input
                   type="text"
                   placeholder="e.g. Ramesh Bhai Broker"
                   className="input"
+                  list="brokers-list"
+                  autoComplete="off"
                   value={brokerName}
                   onChange={(e) => setBrokerName(e.target.value)}
                 />
+                <datalist id="brokers-list">
+                  {allBrokers.map((b, bIdx) => (
+                    <option key={bIdx} value={b} />
+                  ))}
+                </datalist>
               </div>
 
               <div>
@@ -561,6 +694,7 @@ const safePieces = (p: any): number => {
                   type="text"
                   placeholder="+91..."
                   className="input"
+                  autoComplete="off"
                   value={brokerPhone}
                   onChange={(e) => setBrokerPhone(e.target.value)}
                 />
@@ -768,7 +902,9 @@ const safePieces = (p: any): number => {
                   <div
                     style={{
                       display: "grid",
-                      gridTemplateColumns: "1.1fr 1.4fr 1.3fr 1.2fr 0.8fr 1fr 1fr 1.2fr 1.2fr 36px",
+                      gridTemplateColumns: curWeights.length > 0
+                        ? "1.1fr 1.3fr 1.3fr 1fr 0.8fr 1fr 1.3fr 1.3fr 36px"
+                        : "1.1fr 1.3fr 1.3fr 1fr 0.7fr 0.9fr 1fr 1.3fr 1.3fr 36px",
                       gap: 10,
                       alignItems: "center",
                     }}
@@ -796,7 +932,7 @@ const safePieces = (p: any): number => {
                         {boxes.map((b) => (
                           <option key={b.id} value={b.name}>{b.name}</option>
                         ))}
-                        {boxes.length === 0 && <option value="Box 1 — Emerald Vault">Box 1 — Emerald Vault</option>}
+                        {boxes.length === 0 && <option value="Box 1">Box 1</option>}
                       </select>
                     </div>
 
@@ -813,7 +949,7 @@ const safePieces = (p: any): number => {
                         onChange={(e) => handleUpdateItem(idx, "particulars", e.target.value)}
                       />
                       <datalist id={`variety-list-${idx}`}>
-                        {GEM_VARIETIES.map((v) => (
+                        {allParticulars.map((v) => (
                           <option key={v} value={v} />
                         ))}
                       </datalist>
@@ -836,27 +972,31 @@ const safePieces = (p: any): number => {
                     {/* Pieces */}
                     <div>
                       <label className="label" style={{ fontSize: 11 }}>Pcs</label>
-                      <input
-                        type="number"
-                        required
-                        min="1"
-                        className="input"
-                        value={it.pieces}
-                        onChange={(e) => handleUpdateItem(idx, "pieces", parseInt(e.target.value, 10) || 1)}
-                      />
-                    </div>
-
-                    {/* Weight per Piece (Calibrated) */}
-                    <div>
-                      <label className="label" style={{ fontSize: 11 }}>Wt / Pc (cts)</label>
-                      <input
-                        type="number"
-                        step="0.001"
-                        placeholder="Calibrated"
-                        className="input"
-                        value={it.stone_weight ?? ""}
-                        onChange={(e) => handleUpdateItem(idx, "stone_weight", parseFloat(e.target.value) || 0)}
-                      />
+                      {it.is_uncountable ? (
+                        <div
+                          className="input"
+                          style={{
+                            background: "var(--surface)",
+                            display: "flex",
+                            alignItems: "center",
+                            fontSize: 11,
+                            color: "var(--primary)",
+                            fontWeight: 700,
+                          }}
+                        >
+                          Uncountable
+                        </div>
+                      ) : (
+                        <input
+                          type="number"
+                          name="pieces"
+                          required
+                          min="0"
+                          className="input pieces-input"
+                          value={it.pieces ?? 0}
+                          onChange={(e) => handleUpdateItem(idx, "pieces", Math.max(0, parseInt(e.target.value, 10) || 0))}
+                        />
+                      )}
                     </div>
 
                     {/* Total Weight */}
@@ -872,32 +1012,38 @@ const safePieces = (p: any): number => {
                       />
                     </div>
 
-                    {/* Cost Price */}
+                    {/* Cost Rate per Carat (Primary) */}
                     <div>
-                      <label className="label" style={{ fontSize: 11 }}>Cost Price (₹)*</label>
+                      <label className="label" style={{ fontSize: 11 }}>Cost (₹/ct)*</label>
                       <input
                         type="number"
                         required
+                        placeholder="Cost/ct"
                         className="input"
-                        value={it.cost_price}
-                        onChange={(e) => {
-                          const cost = parseFloat(e.target.value) || 0;
-                          handleUpdateItem(idx, "cost_price", cost);
-                          handleUpdateItem(idx, "target_sale_price", Math.round(cost * 1.5));
-                        }}
+                        style={{ fontWeight: 700 }}
+                        value={it.purchase_rate_per_unit || ""}
+                        onChange={(e) => handleUpdateItem(idx, "purchase_rate_per_unit", parseFloat(e.target.value) || 0)}
                       />
+                      <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2, whiteSpace: "nowrap" }}>
+                        Total: <strong style={{ color: "var(--foreground)" }}>{formatINR(it.cost_price || 0)}</strong>
+                      </div>
                     </div>
 
-                    {/* Ask Price */}
+                    {/* Ask Rate per Carat (Primary) */}
                     <div>
-                      <label className="label" style={{ fontSize: 11 }}>Ask Price (₹)*</label>
+                      <label className="label" style={{ fontSize: 11 }}>Ask (₹/ct)*</label>
                       <input
                         type="number"
                         required
+                        placeholder="Ask/ct"
                         className="input"
-                        value={it.target_sale_price}
-                        onChange={(e) => handleUpdateItem(idx, "target_sale_price", parseFloat(e.target.value) || 0)}
+                        style={{ fontWeight: 700, color: "var(--success)" }}
+                        value={it.sale_rate_per_unit || ""}
+                        onChange={(e) => handleUpdateItem(idx, "sale_rate_per_unit", parseFloat(e.target.value) || 0)}
                       />
+                      <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2, whiteSpace: "nowrap" }}>
+                        Total: <strong style={{ color: "var(--foreground)" }}>{formatINR(it.target_sale_price || 0)}</strong>
+                      </div>
                     </div>
 
                     {/* Remove */}
@@ -913,44 +1059,138 @@ const safePieces = (p: any): number => {
                     </div>
                   </div>
 
-                  {/* Individual Stone Weight Distribution Toolbar & Summary */}
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "1px dashed var(--border)", paddingTop: 8, flexWrap: "wrap", gap: 8 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <button
-                        type="button"
-                        className={`btn btn-xs ${isExpanded ? "btn-primary" : "btn-outline"}`}
-                        style={{ fontSize: 11, padding: "3px 10px", fontWeight: 700 }}
-                        onClick={() => setExpandedWeightsIdx(isExpanded ? null : idx)}
-                        title="Toggle individual stone weights editor"
-                      >
-                        ⚖️ {curWeights.length ? `Stone Weights (${curWeights.length} stones)` : `Stone Weights (None added)`} {isExpanded ? "▲" : "▼"}
-                      </button>
+                  {/* 3 Stone Classification Options & Summary */}
+                  {(() => {
+                    const itCat: "bulk" | "no_individual_weight" | "individual_weight_added" =
+                      it.stone_category || (
+                        it.is_uncountable
+                          ? "bulk"
+                          : (curWeights.length > 0)
+                          ? "individual_weight_added"
+                          : "no_individual_weight"
+                      );
 
-                      {curWeights.length > 0 ? (
-                        <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
-                          {curWeights.slice(0, 4).map((w, sIdx) => (
-                            <span key={sIdx} style={{ fontSize: 10, background: "var(--surface)", border: "1px solid var(--border)", padding: "1px 5px", borderRadius: 3 }}>
-                              #{sIdx + 1}: <strong>{Number(w).toFixed(2)}</strong>ct
-                            </span>
-                          ))}
-                          {curWeights.length > 4 && (
-                            <span style={{ fontSize: 10, color: "var(--muted)" }}>+{curWeights.length - 4} more</span>
-                          )}
-                          <span style={{ fontSize: 11, color: "var(--primary)", fontWeight: 700, marginLeft: 4 }}>
-                            (Sum: {weightsSum} cts)
-                          </span>
+                    return (
+                      <div style={{ borderTop: "1px dashed var(--border)", paddingTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                            <span style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)" }}>Category:</span>
+                            
+                            {/* Option 1: Bulk */}
+                            <label
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 5,
+                                fontSize: 11,
+                                cursor: "pointer",
+                                margin: 0,
+                                padding: "3px 8px",
+                                background: itCat === "bulk" ? "rgba(37, 99, 235, 0.12)" : "var(--surface)",
+                                border: `1.5px solid ${itCat === "bulk" ? "#2563eb" : "var(--border)"}`,
+                                borderRadius: 5,
+                              }}
+                            >
+                              <input
+                                type="radio"
+                                name={`stone_cat_${idx}`}
+                                checked={itCat === "bulk"}
+                                onChange={() => handleSetStoneCategory(idx, "bulk")}
+                              />
+                              <span style={{ fontWeight: itCat === "bulk" ? 800 : 500, color: itCat === "bulk" ? "#2563eb" : "inherit" }}>
+                                📦 Bulk (Weight Only)
+                              </span>
+                            </label>
+
+                            {/* Option 2: Individual stone weight not added */}
+                            <label
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 5,
+                                fontSize: 11,
+                                cursor: "pointer",
+                                margin: 0,
+                                padding: "3px 8px",
+                                background: itCat === "no_individual_weight" ? "rgba(245, 158, 11, 0.12)" : "var(--surface)",
+                                border: `1.5px solid ${itCat === "no_individual_weight" ? "#d97706" : "var(--border)"}`,
+                                borderRadius: 5,
+                              }}
+                            >
+                              <input
+                                type="radio"
+                                name={`stone_cat_${idx}`}
+                                checked={itCat === "no_individual_weight"}
+                                onChange={() => handleSetStoneCategory(idx, "no_individual_weight")}
+                              />
+                              <span style={{ fontWeight: itCat === "no_individual_weight" ? 800 : 500, color: itCat === "no_individual_weight" ? "#d97706" : "inherit" }}>
+                                ⚖️ Individual Weight Not Added
+                              </span>
+                            </label>
+
+                            {/* Option 3: Individual stone weight added */}
+                            <label
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 5,
+                                fontSize: 11,
+                                cursor: "pointer",
+                                margin: 0,
+                                padding: "3px 8px",
+                                background: itCat === "individual_weight_added" ? "rgba(16, 185, 129, 0.12)" : "var(--surface)",
+                                border: `1.5px solid ${itCat === "individual_weight_added" ? "#059669" : "var(--border)"}`,
+                                borderRadius: 5,
+                              }}
+                            >
+                              <input
+                                type="radio"
+                                name={`stone_cat_${idx}`}
+                                checked={itCat === "individual_weight_added"}
+                                onChange={() => handleSetStoneCategory(idx, "individual_weight_added")}
+                              />
+                              <span style={{ fontWeight: itCat === "individual_weight_added" ? 800 : 500, color: itCat === "individual_weight_added" ? "#059669" : "inherit" }}>
+                                💎 Individual Weight Added
+                              </span>
+                            </label>
+
+                            {itCat === "individual_weight_added" && (
+                              <button
+                                type="button"
+                                className={`btn btn-xs ${isExpanded ? "btn-primary" : "btn-outline"}`}
+                                style={{ fontSize: 10, padding: "2px 8px", fontWeight: 700 }}
+                                onClick={() => setExpandedWeightsIdx(isExpanded ? null : idx)}
+                              >
+                                {isExpanded ? "▲ Collapse Weights" : "▼ Expand Weights Table"}
+                              </button>
+                            )}
+                          </div>
+
+                          <div style={{ fontSize: 11, color: "var(--muted)" }}>
+                            Cost Rate: <strong>₹{it.purchase_rate_per_unit || 0}</strong>/ct · Ask Rate: <strong>₹{it.sale_rate_per_unit || 0}</strong>/ct
+                          </div>
                         </div>
-                      ) : (
-                        <span style={{ fontSize: 11, color: "var(--muted)", fontStyle: "italic" }}>
-                          No individual stone weight added (Default)
-                        </span>
-                      )}
-                    </div>
 
-                    <div style={{ fontSize: 11, color: "var(--muted)" }}>
-                      Cost Rate: <strong>₹{it.purchase_rate_per_unit || 0}</strong>/ct · Ask Rate: <strong>₹{it.sale_rate_per_unit || 0}</strong>/ct
-                    </div>
-                  </div>
+                        {/* Status preview snippet */}
+                        {itCat === "individual_weight_added" && curWeights.length > 0 && (
+                          <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap", fontSize: 10 }}>
+                            <span style={{ color: "var(--muted)" }}>Recorded Weights:</span>
+                            {curWeights.slice(0, 5).map((w, sIdx) => (
+                              <span key={sIdx} style={{ background: "var(--surface)", border: "1px solid var(--border)", padding: "1px 5px", borderRadius: 3 }}>
+                                #{sIdx + 1}: <strong>{Number(w).toFixed(2)}</strong>ct
+                              </span>
+                            ))}
+                            {curWeights.length > 5 && (
+                              <span style={{ color: "var(--muted)" }}>+{curWeights.length - 5} more</span>
+                            )}
+                            <span style={{ color: "var(--primary)", fontWeight: 700, marginLeft: 4 }}>
+                              (Sum: {weightsSum} cts)
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
 
                   {/* Expandable Stone Weights Panel */}
                   {isExpanded && (
@@ -991,8 +1231,7 @@ const safePieces = (p: any): number => {
                             className="btn btn-primary btn-xs"
                             onClick={() => {
                               const pcs = safePieces(it.pieces);
-                              const avg = Number(((it.weight || 0) / pcs).toFixed(3));
-                              handleUpdateItem(idx, "stone_weights", Array(pcs).fill(avg));
+                              handleUpdateItem(idx, "stone_weights", Array(pcs).fill(0));
                             }}
                           >
                             + Add Individual Stone Weights ({safePieces(it.pieces)} pcs)
@@ -1055,18 +1294,6 @@ const safePieces = (p: any): number => {
                               </button>
                             </div>
                             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                              <button
-                                type="button"
-                                className="btn btn-outline btn-xs"
-                                onClick={() => {
-                                  const pcs = curWeights.length || safePieces(it.pieces);
-                                  const avg = Number(((it.weight || 0) / pcs).toFixed(3));
-                                  handleUpdateItem(idx, "stone_weights", Array(pcs).fill(avg));
-                                }}
-                                title="Distribute total weight equally across all pieces"
-                              >
-                                Even Split ({(Number(it.weight || 0) / (curWeights.length || 1)).toFixed(3)} ct each)
-                              </button>
                               <button
                                 type="button"
                                 className="btn btn-outline btn-xs"
@@ -1259,7 +1486,7 @@ const safePieces = (p: any): number => {
 
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14 }}>
                 <span>Total Pieces:</span>
-                <strong>{items.reduce((sum, it) => sum + (it.pieces || 1), 0)} pcs</strong>
+                <strong>{items.reduce((sum, it) => sum + (it.is_uncountable ? 0 : (it.pieces || 0)), 0)} pcs</strong>
               </div>
 
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14 }}>

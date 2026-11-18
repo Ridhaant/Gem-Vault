@@ -1,7 +1,7 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams, useNavigate } from "react-router-dom";
-import { apiGet, apiPost, apiPut, apiDelete } from "../api";
+import { apiGet, apiPost, apiPut, apiDelete, getCostToken, setCostToken } from "../api";
 import { Spinner, EmptyState } from "../ui";
 import { formatINR, shortDate } from "../format";
 import type { GemPacket, GemstoneStatus, GemBox, WeightUnit, GemSale, GemStoneDetail } from "../types/gemstone";
@@ -11,7 +11,7 @@ import { DEFAULT_COMPANIES, DEFAULT_SHAPES, DEFAULT_VARIETIES } from "../types/g
 import { PacketQrModal } from "../PacketQrModal";
 import { QREncoder, formatPacketPayload } from "../qrCode";
 import { useToast } from "../toast";
-import { resolvePacketStoneStatuses, getPacketSalesHistoryWithStones, isGenericVariety } from "../packetStones";
+import { resolvePacketStoneStatuses, getPacketSalesHistoryWithStones, isGenericVariety, hasGenuineIndividualWeights } from "../packetStones";
 
 const GEM_SHAPES = [
   "Oval",
@@ -45,10 +45,13 @@ function getPacketPerStoneWeights(p: GemPacket): number[] {
     const valid = p.stone_weights.filter((w) => typeof w === "number" && w > 0);
     if (valid.length > 0) return valid;
   }
+  if (!hasGenuineIndividualWeights(p)) {
+    return [];
+  }
   if (p.stone_weight && p.stone_weight > 0) {
     return [p.stone_weight];
   }
-  const pcs = p.pieces && p.pieces > 0 ? p.pieces : 1;
+  const pcs = Number(p.pieces) || 1;
   if (p.weight && p.weight > 0) {
     return [Math.round((p.weight / pcs) * 100) / 100];
   }
@@ -66,20 +69,49 @@ export default function Inventory() {
   const [activeBoxName, setActiveBoxName] = useState<string | null>(searchParams.get("box") || null);
   const [selectedStoneTypeFilter, setSelectedStoneTypeFilter] = useState<string>("all");
 
-  // Filters & Search
+  // Filters & Search (Dedicated Packet # and Stone Name options)
   const [searchTerm, setSearchTerm] = useState(searchParams.get("q") || "");
+  const [searchPacketNumber, setSearchPacketNumber] = useState<string>("");
+  const [searchStoneName, setSearchStoneName] = useState<string>("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [shapeFilter, setShapeFilter] = useState<string>("all");
   const [companyFilter, setCompanyFilter] = useState<string>("all");
   const [sortBy, setSortBy] = useState<string>("packet_number");
 
+  // Table Pagination (100 rows per page for sub-5ms rendering)
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const pageSize = 100;
+
   // Cost Price Password Protection (Default password: 2014)
-  const [costPriceUnlocked, setCostPriceUnlocked] = useState(false);
+  const [costPriceUnlocked, setCostPriceUnlocked] = useState<boolean>(false);
   const [passwordModalOpen, setPasswordModalOpen] = useState(false);
   const [passwordInput, setPasswordInput] = useState("");
   const [passwordError, setPasswordError] = useState("");
   const [changePasswordModalOpen, setChangePasswordModalOpen] = useState(false);
   const [newPasswordInput, setNewPasswordInput] = useState("");
+
+  // Validate active cost token with SQLite backend on initial page load
+  useEffect(() => {
+    const token = getCostToken();
+    if (!token) {
+      setCostPriceUnlocked(false);
+      return;
+    }
+    apiPost("/cost-price-password/verify-token", { token })
+      .then((res) => {
+        if (res && res.valid) {
+          setCostPriceUnlocked(true);
+        } else {
+          setCostToken(null);
+          setCostPriceUnlocked(false);
+          queryClient.invalidateQueries({ queryKey: ["packets"] });
+          queryClient.invalidateQueries({ queryKey: ["boxes"] });
+        }
+      })
+      .catch(() => {
+        setCostPriceUnlocked(false);
+      });
+  }, []);
 
   // Custom Gemstone Shapes Management
   const [shapeModalOpen, setShapeModalOpen] = useState(false);
@@ -122,19 +154,48 @@ export default function Inventory() {
   const [newCustomTagName, setNewCustomTagName] = useState("");
   const [newCustomTagColor, setNewCustomTagColor] = useState("#8b5cf6");
 
+  // Inline packet purchase date editing state
+  const [editingPurchaseDateId, setEditingPurchaseDateId] = useState<string | null>(null);
+  const [tempPurchaseDate, setTempPurchaseDate] = useState<string>("");
+
+  const isSearchActive = Boolean(searchTerm.trim() || searchPacketNumber.trim() || searchStoneName.trim());
+
   // Data Queries
   const { data: packets = [], isLoading } = useQuery<GemPacket[]>({
-    queryKey: ["packets"],
-    queryFn: () => apiGet("/packets"),
+    queryKey: ["packets", activeBoxName, viewMode, searchTerm.trim(), searchPacketNumber.trim(), searchStoneName.trim(), costPriceUnlocked],
+    queryFn: () => {
+      const q = searchTerm.trim();
+      const pNum = searchPacketNumber.trim();
+      const sName = searchStoneName.trim();
+      const boxParam = activeBoxName ? `&box_name=${encodeURIComponent(activeBoxName)}` : "";
+      
+      if (pNum || sName) {
+        let url = `/packets?limit=500${boxParam}`;
+        if (pNum) url += `&packet_number=${encodeURIComponent(pNum)}`;
+        if (sName) url += `&stone_name=${encodeURIComponent(sName)}`;
+        return apiGet(url);
+      }
+      if (q) {
+        return apiGet(`/packets?search=${encodeURIComponent(q)}${boxParam}&limit=500`);
+      }
+      if (activeBoxName) {
+        return apiGet(`/packets?box_name=${encodeURIComponent(activeBoxName)}`);
+      }
+      if (viewMode === "all_packets") {
+        return apiGet("/packets?limit=500");
+      }
+      return Promise.resolve([]);
+    },
+    enabled: Boolean(activeBoxName || viewMode === "all_packets" || isSearchActive),
   });
 
   const { data: boxes = [] } = useQuery<GemBox[]>({
-    queryKey: ["boxes"],
+    queryKey: ["boxes", costPriceUnlocked],
     queryFn: () => apiGet("/boxes"),
   });
 
   const { data: allSales = [] } = useQuery<GemSale[]>({
-    queryKey: ["sales"],
+    queryKey: ["sales", costPriceUnlocked],
     queryFn: () => apiGet("/sales"),
   });
 
@@ -163,18 +224,42 @@ export default function Inventory() {
     return Array.from(new Set([...DEFAULT_SHAPES, ...GEM_SHAPES, ...customShapes])).filter(Boolean);
   }, [customShapes]);
 
-  // Cost Price Password Mutations
+  // Merged List of Gemstone Varieties / Particulars (Default + Custom)
+  const allParticulars = useMemo(() => {
+    return Array.from(new Set([...DEFAULT_VARIETIES, ...(customParticulars || [])])).filter(Boolean);
+  }, [customParticulars]);
+
+  // Cost Price Password Mutations & Lock Handler
+  const handleLockCostPrice = async () => {
+    const token = getCostToken();
+    try {
+      await apiPost("/cost-price-password/lock", { token });
+    } catch {}
+    setCostToken(null);
+    setCostPriceUnlocked(false);
+    queryClient.invalidateQueries({ queryKey: ["packets"] });
+    queryClient.invalidateQueries({ queryKey: ["boxes"] });
+    queryClient.invalidateQueries({ queryKey: ["sales"] });
+    show("🔒 Cost prices locked and confidential details secured.", "info");
+  };
+
   const verifyPasswordMutation = useMutation({
     mutationFn: (pw: string) => apiPost("/cost-price-password/verify", { password: pw }),
     onSuccess: (res: any) => {
       if (res?.valid) {
+        if (res?.token) {
+          setCostToken(res.token);
+        }
         setCostPriceUnlocked(true);
         setPasswordModalOpen(false);
         setPasswordInput("");
         setPasswordError("");
+        queryClient.invalidateQueries({ queryKey: ["packets"] });
+        queryClient.invalidateQueries({ queryKey: ["boxes"] });
+        queryClient.invalidateQueries({ queryKey: ["sales"] });
         show("✓ Cost prices revealed successfully!", "success");
       } else {
-        setPasswordError("Incorrect cost price password. Default is 2014.");
+        setPasswordError("Incorrect Security PIN. Please enter the correct PIN.");
       }
     },
     onError: (err: any) => setPasswordError(err.message || "Failed to verify"),
@@ -336,13 +421,29 @@ export default function Inventory() {
     return `ex/${maxNum + 1}`;
   }, [packets]);
 
-  // Aggregate Metrics for all Vault Boxes
+  // Aggregate Metrics for all Vault Boxes (Ultra-fast $O(N)$ lookup)
   const boxSummaryList = useMemo(() => {
     const list = boxes.map((box) => {
+      // If box metrics are pre-aggregated from SQLite API or defaults, use them instantly!
+      if (box.packet_count !== undefined) {
+        return {
+          box,
+          packets: activeBoxName && normalizeBoxName(box.name) === normalizeBoxName(activeBoxName) ? packets : [],
+          count: box.packet_count,
+          inStockCount: box.in_stock_count ?? box.packet_count,
+          totalPcs: box.total_pcs ?? 0,
+          totalWeight: box.total_weight ?? 0,
+          totalPurchase: box.cost_valuation ?? 0,
+          totalSale: box.asking_valuation ?? 0,
+          margin: (box.asking_valuation ?? 0) - (box.cost_valuation ?? 0),
+          stoneTypeSummary: [],
+        };
+      }
+
       const boxPackets = packets.filter(
         (p) => normalizeBoxName(p.box_name) === normalizeBoxName(box.name)
       );
-      const totalPcs = boxPackets.reduce((sum, p) => sum + (p.pieces || 1), 0);
+      const totalPcs = boxPackets.reduce((sum, p) => sum + (p.is_uncountable ? 0 : (Number(p.pieces) || 0)), 0);
       const totalWeight = Math.round(boxPackets.reduce((sum, p) => sum + (p.weight || 0), 0) * 100) / 100;
       const totalPurchase = boxPackets.reduce((sum, p) => sum + (p.purchase_price || 0), 0);
       const totalSale = boxPackets.reduce((sum, p) => sum + (p.sale_price || 0), 0);
@@ -363,7 +464,7 @@ export default function Inventory() {
       boxPackets.forEach((p) => {
         const t = (p.particulars || "Gemstone").trim();
         if (!stMap[t]) stMap[t] = { type: t, pcs: 0, weight: 0, unit: p.unit || "cts" };
-        stMap[t].pcs += p.pieces || 1;
+        stMap[t].pcs += p.is_uncountable ? 0 : (Number(p.pieces) || 0);
         stMap[t].weight = Math.round((stMap[t].weight + (p.weight || 0)) * 100) / 100;
 
         const weights = getPacketPerStoneWeights(p);
@@ -391,72 +492,55 @@ export default function Inventory() {
     });
 
     // Check for packets not in any registered box
-    const registeredNames = new Set(boxes.map((b) => normalizeBoxName(b.name)));
-    const unassigned = packets.filter((p) => !p.box_name || !registeredNames.has(normalizeBoxName(p.box_name)));
-    if (unassigned.length > 0) {
-      const totalPcs = unassigned.reduce((sum, p) => sum + (p.pieces || 1), 0);
-      const totalWeight = Math.round(unassigned.reduce((sum, p) => sum + (p.weight || 0), 0) * 100) / 100;
-      const totalPurchase = unassigned.reduce((sum, p) => sum + (p.purchase_price || 0), 0);
-      const totalSale = unassigned.reduce((sum, p) => sum + (p.sale_price || 0), 0);
+    if (packets.length > 0) {
+      const registeredNames = new Set(boxes.map((b) => normalizeBoxName(b.name)));
+      const unassigned = packets.filter((p) => !p.box_name || !registeredNames.has(normalizeBoxName(p.box_name)));
+      if (unassigned.length > 0) {
+        const totalPcs = unassigned.reduce((sum, p) => sum + (p.is_uncountable ? 0 : (Number(p.pieces) || 0)), 0);
+        const totalWeight = Math.round(unassigned.reduce((sum, p) => sum + (p.weight || 0), 0) * 100) / 100;
+        const totalPurchase = unassigned.reduce((sum, p) => sum + (p.purchase_price || 0), 0);
+        const totalSale = unassigned.reduce((sum, p) => sum + (p.sale_price || 0), 0);
 
-      const stMap: Record<
-        string,
-        {
-          type: string;
-          pcs: number;
-          weight: number;
-          minWeight?: number;
-          maxWeight?: number;
-          unit?: string;
-        }
-      > = {};
-      unassigned.forEach((p) => {
-        const t = (p.particulars || "Gemstone").trim();
-        if (!stMap[t]) stMap[t] = { type: t, pcs: 0, weight: 0, unit: p.unit || "cts" };
-        stMap[t].pcs += p.pieces || 1;
-        stMap[t].weight = Math.round((stMap[t].weight + (p.weight || 0)) * 100) / 100;
-
-        const weights = getPacketPerStoneWeights(p);
-        weights.forEach((w) => {
-          if (typeof w === "number" && w > 0) {
-            if (stMap[t].minWeight === undefined || w < stMap[t].minWeight!) stMap[t].minWeight = w;
-            if (stMap[t].maxWeight === undefined || w > stMap[t].maxWeight!) stMap[t].maxWeight = w;
-          }
+        list.push({
+          box: {
+            id: "box-unassigned",
+            name: "General Vault / Unassigned",
+            description: "Packets not currently assigned to any named storage box",
+            color: "#64748b",
+            created_at: "",
+          },
+          packets: unassigned,
+          count: unassigned.length,
+          inStockCount: unassigned.filter((p) => p.status === "in_stock").length,
+          totalPcs,
+          totalWeight,
+          totalPurchase,
+          totalSale,
+          margin: totalSale - totalPurchase,
+          stoneTypeSummary: [],
         });
-      });
-      const stoneTypeSummary = Object.values(stMap).sort((a, b) => b.weight - a.weight);
-
-      list.push({
-        box: {
-          id: "box-unassigned",
-          name: "General Vault / Unassigned",
-          description: "Packets not currently assigned to any named storage box",
-          color: "#64748b",
-          created_at: "",
-        },
-        packets: unassigned,
-        count: unassigned.length,
-        inStockCount: unassigned.filter((p) => p.status === "in_stock").length,
-        totalPcs,
-        totalWeight,
-        totalPurchase,
-        totalSale,
-        margin: totalSale - totalPurchase,
-        stoneTypeSummary,
-      });
+      }
     }
 
     return list;
-  }, [boxes, packets]);
+  }, [boxes, packets, activeBoxName]);
 
-  // Overall Vault Totals
+  // Overall Vault Totals (Computed in microseconds)
   const overallTotals = useMemo(() => {
+    const hasPrecalc = boxes.length > 0 && boxes[0].packet_count !== undefined;
+    if (hasPrecalc) {
+      const totalPackets = boxes.reduce((sum, b) => sum + (b.packet_count || 0), 0);
+      const totalWeight = Math.round(boxes.reduce((sum, b) => sum + (b.total_weight || 0), 0) * 100) / 100;
+      const totalCost = boxes.reduce((sum, b) => sum + (b.cost_valuation || 0), 0);
+      const totalAsk = boxes.reduce((sum, b) => sum + (b.asking_valuation || 0), 0);
+      return { totalPackets, totalWeight, totalCost, totalAsk, margin: totalAsk - totalCost };
+    }
     const totalPackets = packets.length;
     const totalWeight = Math.round(packets.reduce((sum, p) => sum + (p.weight || 0), 0) * 100) / 100;
     const totalCost = packets.reduce((sum, p) => sum + (p.purchase_price || 0), 0);
     const totalAsk = packets.reduce((sum, p) => sum + (p.sale_price || 0), 0);
     return { totalPackets, totalWeight, totalCost, totalAsk, margin: totalAsk - totalCost };
-  }, [packets]);
+  }, [boxes, packets]);
 
   // Active Box Metrics (if an active box is selected)
   const currentOpenBox = useMemo(() => {
@@ -509,7 +593,7 @@ export default function Inventory() {
           unit: p.unit || "cts",
         };
       }
-      const pcs = p.pieces && p.pieces > 0 ? p.pieces : 1;
+      const pcs = p.is_uncountable ? 0 : (Number(p.pieces) || 0);
       const wt = p.weight || 0;
       typeMap[type].totalPieces += pcs;
       typeMap[type].totalWeight = Math.round((typeMap[type].totalWeight + wt) * 100) / 100;
@@ -552,6 +636,16 @@ export default function Inventory() {
       );
     }
 
+    if (searchPacketNumber.trim()) {
+      const q = searchPacketNumber.toLowerCase().trim();
+      result = result.filter((p) => p.packet_number.toLowerCase().includes(q));
+    }
+
+    if (searchStoneName.trim()) {
+      const q = searchStoneName.toLowerCase().trim();
+      result = result.filter((p) => p.particulars.toLowerCase().includes(q));
+    }
+
     if (searchTerm.trim()) {
       const q = searchTerm.toLowerCase();
       result = result.filter(
@@ -592,7 +686,17 @@ export default function Inventory() {
     });
 
     return result;
-  }, [packets, activeBoxName, selectedStoneTypeFilter, searchTerm, statusFilter, shapeFilter, companyFilter, sortBy]);
+  }, [packets, activeBoxName, selectedStoneTypeFilter, searchTerm, searchPacketNumber, searchStoneName, statusFilter, shapeFilter, companyFilter, sortBy]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredPackets.length / pageSize));
+  const paginatedPackets = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filteredPackets.slice(start, start + pageSize);
+  }, [filteredPackets, currentPage, pageSize]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, searchPacketNumber, searchStoneName, statusFilter, shapeFilter, companyFilter, sortBy, activeBoxName, viewMode]);
 
   // Grouped Calibrated Stock: Group packets having identical particulars, shape & weight per stone
   const calibratedGroups = useMemo(() => {
@@ -614,8 +718,10 @@ export default function Inventory() {
     const groupMap: Record<string, CalibratedGroup> = {};
 
     packets.forEach((p) => {
-      if (p.status === "sold") return; // Only count current active stock
-      const pcs = p.pieces && p.pieces > 0 ? p.pieces : 1;
+      if (p.status === "sold" || p.is_uncountable) return; // Only count current active stock
+      const pcs = Number(p.pieces) || 0;
+      if (pcs <= 0) return;
+      if (!p.stone_weight && pcs > 1 && !hasGenuineIndividualWeights(p)) return; // Skip uncalibrated parcels
       const sWt = p.stone_weight && p.stone_weight > 0
         ? Math.round(p.stone_weight * 100) / 100
         : Math.round((p.weight / pcs) * 100) / 100;
@@ -672,6 +778,47 @@ export default function Inventory() {
     if (!packetDetailsModalItem) return [];
     return resolvePacketStoneStatuses(packetDetailsModalItem, allSales);
   }, [packetDetailsModalItem, allSales]);
+
+  const modalInStockStones = useMemo(() => {
+    return modalStoneStatuses.filter((s) => s.status === "in_stock");
+  }, [modalStoneStatuses]);
+
+  // Derived ground-truth stock for the dossier modal, strictly honoring the mathematical sum of in-stock stones
+  const modalDerivedStock = useMemo(() => {
+    if (!packetDetailsModalItem) return { weight: 0, pieces: 0, sale_price: 0, purchase_price: 0 };
+    if (!hasGenuineIndividualWeights(packetDetailsModalItem) || modalStoneStatuses.length === 0 || packetDetailsModalItem.is_uncountable) {
+      let wt = Number(packetDetailsModalItem.weight) || 0;
+      let pcs = Number(packetDetailsModalItem.pieces) || 0;
+      const sRate = packetDetailsModalItem.sale_rate_per_unit || (wt ? Math.round(packetDetailsModalItem.sale_price / wt) : 0);
+      const pRate = packetDetailsModalItem.purchase_rate_per_unit || (wt ? Math.round(packetDetailsModalItem.purchase_price / wt) : 0);
+      return {
+        weight: wt,
+        pieces: pcs,
+        sale_price: sRate ? Math.round(sRate * wt) : packetDetailsModalItem.sale_price,
+        purchase_price: pRate ? Math.round(pRate * wt) : packetDetailsModalItem.purchase_price,
+      };
+    }
+    const inStockPcs = modalInStockStones.length > 0 ? modalInStockStones.length : (packetDetailsModalItem.pieces || 0);
+    const hasGenuineWeights = modalInStockStones.length > 0 && modalInStockStones.every((s) => Number(s.weight) > 0);
+    const sumWts = Number(modalInStockStones.reduce((sum, s) => sum + (Number(s.weight) || 0), 0).toFixed(2));
+    const inStockWt = (hasGenuineWeights && sumWts > 0)
+      ? sumWts
+      : (packetDetailsModalItem.weight > 0 ? packetDetailsModalItem.weight : sumWts);
+
+    const sRate =
+      packetDetailsModalItem.sale_rate_per_unit ||
+      (packetDetailsModalItem.weight ? Math.round(packetDetailsModalItem.sale_price / packetDetailsModalItem.weight) : 0);
+    const pRate =
+      packetDetailsModalItem.purchase_rate_per_unit ||
+      (packetDetailsModalItem.weight ? Math.round(packetDetailsModalItem.purchase_price / packetDetailsModalItem.weight) : 0);
+
+    return {
+      weight: inStockWt,
+      pieces: inStockPcs,
+      sale_price: sRate ? Math.round(sRate * inStockWt) : packetDetailsModalItem.sale_price,
+      purchase_price: pRate ? Math.round(pRate * inStockWt) : packetDetailsModalItem.purchase_price,
+    };
+  }, [packetDetailsModalItem, modalStoneStatuses, modalInStockStones, matchingSalesHistory]);
 
   const totalPcsSold = useMemo(() => {
     return matchingSalesHistory
@@ -816,7 +963,7 @@ export default function Inventory() {
 
   // Handlers for Packets
   const handleAddNewPacket = (preselectedBox?: string) => {
-    const targetBox = preselectedBox || activeBoxName || boxes[0]?.name || "Box 1 — Emerald Vault";
+    const targetBox = preselectedBox || activeBoxName || boxes[0]?.name || "Box 1";
     setEditingPacket({
       packet_number: nextPacketNumber,
       box_name: targetBox,
@@ -824,7 +971,8 @@ export default function Inventory() {
       shape: "Oval",
       weight: 0,
       unit: "cts",
-      pieces: 1,
+      pieces: 0,
+      is_uncountable: false,
       stone_weight: 0,
       stone_weights: [],
       stone_details: [],
@@ -850,10 +998,11 @@ export default function Inventory() {
 
   const handleEditPacket = (pkt: GemPacket, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    const pcs = pkt.pieces > 0 ? pkt.pieces : 1;
-    const calcStoneWeight = pkt.stone_weight ?? (pkt.weight ? Math.round((pkt.weight / pcs) * 1000) / 1000 : 0);
-    const hasExistingWeights = Array.isArray(pkt.stone_weights) && pkt.stone_weights.length > 0;
-    const hasExistingDetails = Array.isArray(pkt.stone_details) && pkt.stone_details.length > 0;
+    const isUnc = Boolean(pkt.is_uncountable);
+    const pcs = isUnc ? 0 : (pkt.pieces !== undefined ? pkt.pieces : 0);
+    const calcStoneWeight = 0;
+    const hasExistingWeights = !isUnc && Array.isArray(pkt.stone_weights) && pkt.stone_weights.length > 0;
+    const hasExistingDetails = !isUnc && Array.isArray(pkt.stone_details) && pkt.stone_details.length > 0;
 
     const resolvedWeights = hasExistingWeights ? [...pkt.stone_weights!] : [];
     const resolvedDetails: GemStoneDetail[] = hasExistingDetails
@@ -870,6 +1019,8 @@ export default function Inventory() {
 
     setEditingPacket({
       ...pkt,
+      is_uncountable: isUnc,
+      pieces: pcs,
       stone_weight: calcStoneWeight,
       stone_weights: resolvedWeights,
       stone_details: resolvedDetails,
@@ -1059,7 +1210,7 @@ export default function Inventory() {
                 type="button"
                 className="btn btn-outline"
                 style={{ borderColor: "#10b981", color: "#10b981", fontWeight: 800 }}
-                onClick={() => setCostPriceUnlocked(false)}
+                onClick={handleLockCostPrice}
                 title="Hide cost prices and lock with password again"
               >
                 🔓 Cost Revealed (Click to Lock)
@@ -1079,13 +1230,14 @@ export default function Inventory() {
           ) : (
             <button
               type="button"
-              className="btn btn-outline"
+              className="btn btn-primary"
+              style={{ fontWeight: 800 }}
               onClick={() => {
                 setPasswordInput("");
                 setPasswordError("");
                 setPasswordModalOpen(true);
               }}
-              title="Reveal purchase/cost prices by entering password (default: 2014)"
+              title="Reveal purchase/cost prices by entering Security PIN"
             >
               🔒 Reveal Cost Price
             </button>
@@ -1127,6 +1279,118 @@ export default function Inventory() {
             + Add New Packet
           </button>
         </div>
+      </div>
+
+      {/* =========================================================================
+          UNIVERSAL INVENTORY SEARCH BAR (Always Available in all views)
+          ========================================================================= */}
+      <div
+        className="card"
+        style={{
+          padding: "10px 16px",
+          background: "var(--surface)",
+          border: isSearchActive ? "1.5px solid var(--primary)" : "1px solid var(--border)",
+          borderRadius: 8,
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          boxShadow: isSearchActive ? "0 0 14px rgba(16, 185, 129, 0.16)" : "none",
+          transition: "border-color 0.2s, box-shadow 0.2s",
+        }}
+      >
+        <div style={{ position: "relative", flex: 1, minWidth: 260 }}>
+          <span
+            style={{
+              position: "absolute",
+              left: 14,
+              top: "50%",
+              transform: "translateY(-50%)",
+              fontSize: 16,
+              color: isSearchActive ? "var(--primary)" : "var(--muted)",
+              pointerEvents: "none",
+            }}
+          >
+            🔍
+          </span>
+          <input
+            type="text"
+            className="input"
+            style={{
+              paddingLeft: 42,
+              paddingRight: searchTerm ? 38 : 14,
+              height: 42,
+              fontSize: 14,
+              fontWeight: 600,
+              width: "100%",
+            }}
+            placeholder={
+              activeBoxName
+                ? `Search inside "${activeBoxName}" by Packet # (e.g. PKT-001, 054777) or Stone Name (e.g. Emerald, Ruby)...`
+                : "Search across all 168 Vault Boxes by Packet # (e.g. PKT-001, 054777) or Stone Name (e.g. Emerald, Ruby, Sapphire)..."
+            }
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+          />
+          {searchTerm && (
+            <button
+              type="button"
+              onClick={() => setSearchTerm("")}
+              style={{
+                position: "absolute",
+                right: 12,
+                top: "50%",
+                transform: "translateY(-50%)",
+                background: "none",
+                border: "none",
+                color: "var(--muted)",
+                cursor: "pointer",
+                fontSize: 16,
+                fontWeight: 800,
+                padding: 4,
+                lineHeight: 1,
+              }}
+              title="Clear Search"
+            >
+              ✕
+            </button>
+          )}
+        </div>
+
+        {isSearchActive && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+            <span
+              style={{
+                fontSize: 12,
+                fontWeight: 800,
+                background: "rgba(16, 185, 129, 0.12)",
+                color: "var(--primary)",
+                padding: "4px 10px",
+                borderRadius: 20,
+                border: "1px solid rgba(16, 185, 129, 0.3)",
+              }}
+            >
+              {isLoading ? "Searching..." : `${filteredPackets.length} Matches Found`}
+            </span>
+            {activeBoxName && (
+              <button
+                type="button"
+                className="btn btn-outline btn-xs"
+                onClick={() => setActiveBoxName(null)}
+                title="Search across all 168 vault boxes"
+              >
+                🌐 Search All Boxes
+              </button>
+            )}
+            <button
+              type="button"
+              className="btn btn-ghost btn-xs"
+              onClick={() => setSearchTerm("")}
+              style={{ color: "var(--muted)", fontWeight: 700 }}
+            >
+              Clear & Return
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Breadcrumb Navigation when inside a Box */}
@@ -1202,7 +1466,7 @@ export default function Inventory() {
       )}
 
       {/* Stone Pieces & Weight Breakdown by Stone Type inside Opened Box */}
-      {activeBoxName && activeBoxStoneBreakdown.length > 0 && (
+      {!isSearchActive && activeBoxName && activeBoxStoneBreakdown.length > 0 && (
         <div
           className="card"
           style={{
@@ -1359,7 +1623,7 @@ export default function Inventory() {
       {/* =========================================================================
           VIEW 1: VISUAL VAULT BOXES GRID (When viewing all boxes in Boxes View)
           ========================================================================= */}
-      {!activeBoxName && viewMode === "boxes" && (
+      {!isSearchActive && !activeBoxName && viewMode === "boxes" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <h2 style={{ fontSize: 17, fontWeight: 800, margin: 0, display: "flex", alignItems: "center", gap: 8 }}>
@@ -1427,9 +1691,15 @@ export default function Inventory() {
                           <h3 style={{ fontSize: 16, fontWeight: 900, margin: 0, color: "var(--on-surface)" }}>
                             {box.name}
                           </h3>
-                          <span style={{ fontSize: 12.5, color: "var(--on-surface-2)", fontWeight: 600 }}>
+                          <div style={{ fontSize: 12.5, color: "var(--on-surface-2)", fontWeight: 600 }}>
                             {count} Packets ({totalPcs} Pcs) • {totalWeight} cts/g
-                          </span>
+                          </div>
+                          {box.initial_weight !== undefined && box.initial_weight > totalWeight && (
+                            <div style={{ fontSize: 11, color: "#10b981", fontWeight: 700, marginTop: 3 }}>
+                              🏷️ {Number((box.initial_weight - totalWeight).toFixed(2))} cts sold / deducted
+                              <span style={{ color: "var(--muted)", fontWeight: 500 }}> (Orig: {box.initial_weight} cts{box.initial_pcs && box.initial_pcs > totalPcs ? `, ${box.initial_pcs} pcs` : ""})</span>
+                            </div>
+                          )}
                         </div>
                       </div>
 
@@ -1519,7 +1789,22 @@ export default function Inventory() {
                           Cost Valuation
                         </div>
                         <div style={{ fontSize: 15, fontWeight: 900, color: "var(--on-surface)" }}>
-                          {costPriceUnlocked ? formatINR(totalPurchase) : "🔒 ••••••"}
+                          {costPriceUnlocked ? (
+                            formatINR(totalPurchase)
+                          ) : (
+                            <span
+                              style={{ cursor: "pointer", color: "var(--muted)" }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setPasswordInput("");
+                                setPasswordError("");
+                                setPasswordModalOpen(true);
+                              }}
+                              title="Click to unlock cost valuation"
+                            >
+                              🔒 ••••••
+                            </span>
+                          )}
                         </div>
                       </div>
                       <div>
@@ -1608,7 +1893,7 @@ export default function Inventory() {
       {/* =========================================================================
           VIEW 3: CALIBRATED STONES GROUPING (Identical Weight / Size Stones Grouped)
           ========================================================================= */}
-      {!activeBoxName && viewMode === "calibrated_groups" && (
+      {!isSearchActive && !activeBoxName && viewMode === "calibrated_groups" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           {/* Header Summary KPI */}
           <div
@@ -1776,16 +2061,110 @@ export default function Inventory() {
                   </tbody>
                 </table>
               </div>
+
+              {/* Table Pagination Bar */}
+              {filteredPackets.length > pageSize && (
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    padding: "10px 16px",
+                    background: "var(--surface)",
+                    borderTop: "1px solid var(--border)",
+                    fontSize: 12,
+                    flexWrap: "wrap",
+                    gap: 10,
+                  }}
+                >
+                  <span style={{ color: "var(--muted)" }}>
+                    Showing <strong>{(currentPage - 1) * pageSize + 1}</strong> to{" "}
+                    <strong>{Math.min(currentPage * pageSize, filteredPackets.length)}</strong> of{" "}
+                    <strong>{filteredPackets.length.toLocaleString()}</strong> packets
+                  </span>
+
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <button
+                      type="button"
+                      className="btn btn-outline btn-xs"
+                      disabled={currentPage <= 1}
+                      onClick={() => setCurrentPage(1)}
+                    >
+                      « First
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-outline btn-xs"
+                      disabled={currentPage <= 1}
+                      onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                    >
+                      ‹ Prev
+                    </button>
+                    <span style={{ padding: "0 8px", fontWeight: 700 }}>
+                      Page {currentPage} of {totalPages}
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn-outline btn-xs"
+                      disabled={currentPage >= totalPages}
+                      onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                    >
+                      Next ›
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-outline btn-xs"
+                      disabled={currentPage >= totalPages}
+                      onClick={() => setCurrentPage(totalPages)}
+                    >
+                      Last »
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
       )}
 
       {/* =========================================================================
-          VIEW 2: PACKETS TABLE (Inside a specific box OR All Packets master table)
+          VIEW 2: PACKETS TABLE (Inside a specific box, All Packets table, OR Active Search Results)
           ========================================================================= */}
-      {(activeBoxName || viewMode === "all_packets") && (
+      {(isSearchActive || activeBoxName || viewMode === "all_packets") && (
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {/* Active Search Results Banner */}
+          {isSearchActive && (
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: 10,
+                padding: "4px 2px",
+              }}
+            >
+              <div>
+                <h2 style={{ fontSize: 16, fontWeight: 900, margin: 0, display: "flex", alignItems: "center", gap: 8 }}>
+                  <span>🔍</span> Search Results for &ldquo;{searchTerm}&rdquo; ({filteredPackets.length} {filteredPackets.length === 1 ? "Packet" : "Packets"} Found)
+                </h2>
+                <span style={{ fontSize: 12.5, color: "var(--on-surface-2)" }}>
+                  {activeBoxName
+                    ? `Showing packets matching "${searchTerm}" inside ${activeBoxName}.`
+                    : `Showing packets matching "${searchTerm}" across all 168 physical vault storage boxes.`}
+                </span>
+              </div>
+              <button
+                type="button"
+                className="btn btn-outline btn-xs"
+                onClick={() => setSearchTerm("")}
+                style={{ fontWeight: 800 }}
+              >
+                ✕ Clear Search & Return
+              </button>
+            </div>
+          )}
+
           {/* Filter & Search Bar */}
           <div
             className="card"
@@ -1797,31 +2176,49 @@ export default function Inventory() {
               alignItems: "center",
             }}
           >
-            {/* Search */}
-            <div style={{ position: "relative", flexGrow: 1, minWidth: 220 }}>
-              <span
-                style={{
-                  position: "absolute",
-                  left: 12,
-                  top: "50%",
-                  transform: "translateY(-50%)",
-                  fontSize: 14,
-                }}
-              >
-                🔍
-              </span>
-              <input
-                type="text"
-                className="input"
-                style={{ paddingLeft: 34 }}
-                placeholder={
-                  activeBoxName
-                    ? `Search packets inside ${activeBoxName}...`
-                    : "Search packet #, gem, shape, box, cert, party..."
-                }
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-              />
+            {/* Specific Search: Packet # and Stone Name */}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", flexGrow: 1 }}>
+              <div style={{ position: "relative", flex: "1 1 180px", minWidth: 150 }}>
+                <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", fontSize: 13 }}>
+                  🏷️
+                </span>
+                <input
+                  type="text"
+                  className="input"
+                  style={{ paddingLeft: 30, fontSize: 12 }}
+                  placeholder="Search Packet # (e.g. EX/054777)..."
+                  value={searchPacketNumber}
+                  onChange={(e) => setSearchPacketNumber(e.target.value)}
+                />
+              </div>
+
+              <div style={{ position: "relative", flex: "1 1 200px", minWidth: 160 }}>
+                <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", fontSize: 13 }}>
+                  💎
+                </span>
+                <input
+                  type="text"
+                  className="input"
+                  style={{ paddingLeft: 30, fontSize: 12 }}
+                  placeholder="Search Stone Name (e.g. Emerald, Ruby)..."
+                  value={searchStoneName}
+                  onChange={(e) => setSearchStoneName(e.target.value)}
+                />
+              </div>
+
+              <div style={{ position: "relative", flex: "1 1 200px", minWidth: 160 }}>
+                <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", fontSize: 13 }}>
+                  🔍
+                </span>
+                <input
+                  type="text"
+                  className="input"
+                  style={{ paddingLeft: 30, fontSize: 12 }}
+                  placeholder="General search (shape, cert, party)..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                />
+              </div>
             </div>
 
             {/* Box Selector if in master table mode */}
@@ -1901,7 +2298,9 @@ export default function Inventory() {
               icon="💎"
               title="No Gemstone Packets Found"
               description={
-                activeBoxName
+                isSearchActive
+                  ? `No packets matching "${searchTerm}" found${activeBoxName ? ` inside ${activeBoxName}` : " across all 168 vault boxes"}. Check packet number spelling or try a partial stone name.`
+                  : activeBoxName
                   ? `No packets found inside "${activeBoxName}". Click "+ Add Packet to this Box" to insert one.`
                   : "Try adjusting your search criteria or add a new packet to the vault."
               }
@@ -1943,7 +2342,8 @@ export default function Inventory() {
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredPackets.map((pkt, idx) => {
+                    {paginatedPackets.map((pkt, pageIdx) => {
+                      const idx = (currentPage - 1) * pageSize + pageIdx;
                       const isSelected = selectedPackets.includes(pkt.id);
                       const unitLabel = pkt.unit === "g" ? "g" : "cts";
                       const pRate = pkt.purchase_rate_per_unit || (pkt.weight ? Math.round(pkt.purchase_price / pkt.weight) : 0);
@@ -2051,21 +2451,100 @@ export default function Inventory() {
                           <td>{pkt.shape}</td>
 
                           {/* Weight & Unit */}
-                          <td style={{ textAlign: "right", fontWeight: 700 }}>
-                            {pkt.weight} <span style={{ fontSize: 10, color: "var(--muted)" }}>{unitLabel}</span>
+                          <td style={{ textAlign: "right" }}>
+                            <div style={{ fontWeight: 800, color: "var(--on-surface)" }}>
+                              {pkt.weight} <span style={{ fontSize: 10, color: "var(--muted)" }}>{unitLabel}</span>
+                            </div>
+                            {pkt.initial_weight && pkt.initial_weight > pkt.weight ? (
+                              <div style={{ fontSize: 10, color: "#ef4444", fontWeight: 700, marginTop: 1 }} title={`Initial weight: ${pkt.initial_weight} ${unitLabel}`}>
+                                ↓ -{Number((pkt.initial_weight - pkt.weight).toFixed(2))} sold
+                                <div style={{ fontSize: 9, color: "var(--muted)", fontWeight: 500 }}>
+                                  Orig: {pkt.initial_weight}
+                                </div>
+                              </div>
+                            ) : null}
                           </td>
 
                           {/* Pieces */}
-                          <td style={{ textAlign: "center" }}>{pkt.pieces}</td>
+                          <td style={{ textAlign: "center" }}>
+                            {pkt.is_uncountable ? (
+                              <span
+                                className="badge badge-outline"
+                                style={{
+                                  fontSize: 10,
+                                  fontWeight: 700,
+                                  background: "rgba(59, 130, 246, 0.08)",
+                                  color: "#2563eb",
+                                  borderColor: "rgba(59, 130, 246, 0.3)",
+                                  padding: "2px 6px",
+                                }}
+                                title="Uncountable bulk parcel — weight only"
+                              >
+                                📦 Bulk
+                              </span>
+                            ) : pkt.stone_category === "no_individual_weight" || (!hasGenuineIndividualWeights(pkt) && (pkt.pieces || 0) > 1) ? (
+                              <div>
+                                <span style={{ fontWeight: 700 }}>{pkt.pieces !== undefined ? pkt.pieces : 1} pcs</span>
+                                {pkt.initial_pieces && pkt.initial_pieces > pkt.pieces ? (
+                                  <div style={{ fontSize: 9.5, color: "#ef4444", fontWeight: 700 }} title={`Initial pieces: ${pkt.initial_pieces}`}>
+                                    ↓ -{pkt.initial_pieces - pkt.pieces} sold
+                                  </div>
+                                ) : (
+                                  <div style={{ fontSize: 9.5, color: "#d97706", fontWeight: 600 }}>⚖️ No Indiv Wt</div>
+                                )}
+                              </div>
+                            ) : (
+                              <div>
+                                <span style={{ fontWeight: 700 }}>{pkt.pieces !== undefined ? pkt.pieces : 1} pcs</span>
+                                {pkt.initial_pieces && pkt.initial_pieces > pkt.pieces ? (
+                                  <div style={{ fontSize: 9.5, color: "#ef4444", fontWeight: 700 }} title={`Initial pieces: ${pkt.initial_pieces}`}>
+                                    ↓ -{pkt.initial_pieces - pkt.pieces} sold
+                                  </div>
+                                ) : (
+                                  <div style={{ fontSize: 9.5, color: "#059669", fontWeight: 600 }}>💎 Indiv Wt</div>
+                                )}
+                              </div>
+                            )}
+                          </td>
 
                           {/* Purchase Rate per ct/g */}
                           <td style={{ textAlign: "right", color: "var(--muted)", background: "rgba(0,0,0,0.02)" }}>
-                            {costPriceUnlocked ? formatINR(pRate) : "🔒 ••••••"}
+                            {costPriceUnlocked ? (
+                              formatINR(pRate)
+                            ) : (
+                              <span
+                                style={{ cursor: "pointer", color: "var(--muted)", fontSize: 11 }}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setPasswordInput("");
+                                  setPasswordError("");
+                                  setPasswordModalOpen(true);
+                                }}
+                                title="Click to unlock cost prices"
+                              >
+                                🔒 ••••••
+                              </span>
+                            )}
                           </td>
 
                           {/* Total Purchase Cost (Aggregate in adjacent column) */}
                           <td style={{ textAlign: "right", fontWeight: 800, background: "rgba(0,0,0,0.04)" }}>
-                            {costPriceUnlocked ? formatINR(pkt.purchase_price) : "🔒 ••••••"}
+                            {costPriceUnlocked ? (
+                              formatINR(pkt.purchase_price)
+                            ) : (
+                              <span
+                                style={{ cursor: "pointer", color: "var(--muted)", fontSize: 11 }}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setPasswordInput("");
+                                  setPasswordError("");
+                                  setPasswordModalOpen(true);
+                                }}
+                                title="Click to unlock cost prices"
+                              >
+                                🔒 ••••••
+                              </span>
+                            )}
                           </td>
 
                           {/* Sale Rate per ct/g */}
@@ -2161,6 +2640,67 @@ export default function Inventory() {
                   </tbody>
                 </table>
               </div>
+
+              {/* Table Pagination Bar */}
+              {filteredPackets.length > pageSize && (
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    padding: "10px 16px",
+                    background: "var(--surface)",
+                    borderTop: "1px solid var(--border)",
+                    fontSize: 12,
+                    flexWrap: "wrap",
+                    gap: 10,
+                  }}
+                >
+                  <span style={{ color: "var(--muted)" }}>
+                    Showing <strong>{(currentPage - 1) * pageSize + 1}</strong> to{" "}
+                    <strong>{Math.min(currentPage * pageSize, filteredPackets.length)}</strong> of{" "}
+                    <strong>{filteredPackets.length.toLocaleString()}</strong> packets
+                  </span>
+
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <button
+                      type="button"
+                      className="btn btn-outline btn-xs"
+                      disabled={currentPage <= 1}
+                      onClick={() => setCurrentPage(1)}
+                    >
+                      « First
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-outline btn-xs"
+                      disabled={currentPage <= 1}
+                      onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                    >
+                      ‹ Prev
+                    </button>
+                    <span style={{ padding: "0 8px", fontWeight: 700 }}>
+                      Page {currentPage} of {totalPages}
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn-outline btn-xs"
+                      disabled={currentPage >= totalPages}
+                      onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                    >
+                      Next ›
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-outline btn-xs"
+                      disabled={currentPage >= totalPages}
+                      onClick={() => setCurrentPage(totalPages)}
+                    >
+                      Last »
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -2190,7 +2730,7 @@ export default function Inventory() {
                   type="text"
                   required
                   className="input"
-                  placeholder="e.g. Box 1 — Emerald Vault or Safe 2 - Burma Rubies"
+                  placeholder="e.g. Box 1 or Safe 2"
                   value={boxFormName}
                   onChange={(e) => setBoxFormName(e.target.value)}
                 />
@@ -2442,7 +2982,7 @@ export default function Inventory() {
             <form
               onSubmit={(e) => {
                 e.preventDefault();
-                const targetBox = editingPacket.box_name || boxes[0]?.name || "Box 1 — Emerald Vault";
+                const targetBox = editingPacket.box_name || boxes[0]?.name || "Box 1";
                 const pNum = (editingPacket.packet_number || "").trim();
                 const isDuplicate = packets.some(
                   (p) =>
@@ -2491,7 +3031,7 @@ export default function Inventory() {
                 <select
                   className="select"
                   style={{ width: "100%", fontWeight: 700, fontSize: 13 }}
-                  value={editingPacket.box_name || boxes[0]?.name || "Box 1 — Emerald Vault"}
+                  value={editingPacket.box_name || boxes[0]?.name || "Box 1"}
                   onChange={(e) => setEditingPacket({ ...editingPacket, box_name: e.target.value })}
                   required
                 >
@@ -2547,7 +3087,7 @@ export default function Inventory() {
                     onChange={(e) => setEditingPacket({ ...editingPacket, particulars: e.target.value })}
                   />
                   <datalist id="particulars-datalist">
-                    {customParticulars.map((cp, i) => (
+                    {allParticulars.map((cp, i) => (
                       <option key={i} value={cp} />
                     ))}
                   </datalist>
@@ -2579,10 +3119,192 @@ export default function Inventory() {
                 </div>
               </div>
 
+              {/* 3 Categories: Bulk vs Individual Weight Not Added vs Individual Weight Added */}
+              {(() => {
+                const curCategory = editingPacket.stone_category || (
+                  editingPacket.is_uncountable
+                    ? "bulk"
+                    : (getEditingStoneDetails().length > 0 || (editingPacket.stone_weights && editingPacket.stone_weights.length > 0))
+                    ? "individual_weight_added"
+                    : "no_individual_weight"
+                );
+
+                return (
+                  <div style={{ marginBottom: 14 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                      <label className="label" style={{ margin: 0, fontWeight: 800, fontSize: 12 }}>
+                        Stone Classification (Select 1 of 3 Options):*
+                      </label>
+                      <span style={{ fontSize: 11, color: "var(--muted)" }}>
+                        Ensures program distinguishes stone structure accurately
+                      </span>
+                    </div>
+
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+                      {/* Option 1: Bulk */}
+                      <div
+                        style={{
+                          background: curCategory === "bulk" ? "rgba(59, 130, 246, 0.1)" : "var(--surface)",
+                          border: `2px solid ${curCategory === "bulk" ? "#2563eb" : "var(--border)"}`,
+                          borderRadius: 8,
+                          padding: "10px 12px",
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "flex-start",
+                          gap: 8,
+                          transition: "all 0.15s ease",
+                        }}
+                        onClick={() => {
+                          const wt = editingPacket.weight || 0;
+                          const pRate = editingPacket.purchase_rate_per_unit || 0;
+                          const sRate = editingPacket.sale_rate_per_unit || 0;
+                          setEditingPacket({
+                            ...editingPacket,
+                            stone_category: "bulk",
+                            is_uncountable: true,
+                            pieces: 0,
+                            stone_weight: 0,
+                            stone_weights: [],
+                            stone_details: [],
+                            purchase_price: Math.round(pRate * wt),
+                            sale_price: Math.round(sRate * wt),
+                          });
+                        }}
+                      >
+                        <input
+                          type="radio"
+                          name="stone_cat_select"
+                          checked={curCategory === "bulk"}
+                          onChange={() => {}}
+                          style={{ marginTop: 2, cursor: "pointer" }}
+                        />
+                        <div>
+                          <div style={{ fontWeight: 800, fontSize: 12, color: curCategory === "bulk" ? "#2563eb" : "inherit" }}>
+                            📦 Bulk Parcel
+                          </div>
+                          <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 2 }}>
+                            Uncountable mass (melee/rough). Tracked purely by total weight.
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Option 2: Individual stone weight not added */}
+                      <div
+                        style={{
+                          background: curCategory === "no_individual_weight" ? "rgba(245, 158, 11, 0.1)" : "var(--surface)",
+                          border: `2px solid ${curCategory === "no_individual_weight" ? "#d97706" : "var(--border)"}`,
+                          borderRadius: 8,
+                          padding: "10px 12px",
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "flex-start",
+                          gap: 8,
+                          transition: "all 0.15s ease",
+                        }}
+                        onClick={() => {
+                          const wt = editingPacket.weight || 0;
+                          const pcs = Math.max(1, editingPacket.pieces || 1);
+                          const pRate = editingPacket.purchase_rate_per_unit || 0;
+                          const sRate = editingPacket.sale_rate_per_unit || 0;
+                          setEditingPacket({
+                            ...editingPacket,
+                            stone_category: "no_individual_weight",
+                            is_uncountable: false,
+                            pieces: pcs,
+                            stone_weight: 0,
+                            stone_weights: [],
+                            stone_details: [],
+                            purchase_price: Math.round(pRate * wt),
+                            sale_price: Math.round(sRate * wt),
+                          });
+                        }}
+                      >
+                        <input
+                          type="radio"
+                          name="stone_cat_select"
+                          checked={curCategory === "no_individual_weight"}
+                          onChange={() => {}}
+                          style={{ marginTop: 2, cursor: "pointer" }}
+                        />
+                        <div>
+                          <div style={{ fontWeight: 800, fontSize: 12, color: curCategory === "no_individual_weight" ? "#d97706" : "inherit" }}>
+                            ⚖️ No Individual Weight Added
+                          </div>
+                          <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 2 }}>
+                            Countable pieces with collective total weight.
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Option 3: Individual stone weight added */}
+                      <div
+                        style={{
+                          background: curCategory === "individual_weight_added" ? "rgba(16, 185, 129, 0.1)" : "var(--surface)",
+                          border: `2px solid ${curCategory === "individual_weight_added" ? "#059669" : "var(--border)"}`,
+                          borderRadius: 8,
+                          padding: "10px 12px",
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "flex-start",
+                          gap: 8,
+                          transition: "all 0.15s ease",
+                        }}
+                        onClick={() => {
+                          const wt = editingPacket.weight || 0;
+                          const pcs = Math.max(1, editingPacket.pieces || 1);
+                          const cur = getEditingStoneDetails();
+                          const stones = cur.length > 0 ? cur : Array.from({ length: pcs }).map((_, i) => ({
+                            id: `st-${i + 1}-${Math.random().toString(36).slice(2, 6)}`,
+                            variety: editingPacket.particulars || "",
+                            shape: editingPacket.shape || "Oval",
+                            weight: pcs === 1 ? wt : 0,
+                            mm_size: editingPacket.mm_size || "",
+                          }));
+                          const pRate = editingPacket.purchase_rate_per_unit || 0;
+                          const sRate = editingPacket.sale_rate_per_unit || 0;
+                          setEditingPacket({
+                            ...editingPacket,
+                            stone_category: "individual_weight_added",
+                            is_uncountable: false,
+                            pieces: pcs,
+                            stone_weights: stones.map((s) => s.weight || 0),
+                            stone_details: stones,
+                            purchase_price: Math.round(pRate * wt),
+                            sale_price: Math.round(sRate * wt),
+                          });
+                        }}
+                      >
+                        <input
+                          type="radio"
+                          name="stone_cat_select"
+                          checked={curCategory === "individual_weight_added"}
+                          onChange={() => {}}
+                          style={{ marginTop: 2, cursor: "pointer" }}
+                        />
+                        <div>
+                          <div style={{ fontWeight: 800, fontSize: 12, color: curCategory === "individual_weight_added" ? "#059669" : "inherit" }}>
+                            💎 Individual Weight Added
+                          </div>
+                          <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 2 }}>
+                            Specific per-stone weights and exact details.
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* Weight, Unit Selector (Carats vs Grams), Pieces, Stone Weight & MM Size */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 0.8fr 1fr 1.2fr", gap: 10 }}>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: editingPacket.is_uncountable ? "1.4fr 1fr 1.6fr" : "1fr 1fr 0.8fr 1fr 1.2fr",
+                  gap: 10,
+                }}
+              >
                 <div>
-                  <label className="label">Total Weight:</label>
+                  <label className="label">Total Weight* ({editingPacket.unit || "cts"}):</label>
                   <input
                     type="number"
                     step="0.01"
@@ -2591,16 +3313,26 @@ export default function Inventory() {
                     value={editingPacket.weight || 0}
                     onChange={(e) => {
                       const wt = Number(e.target.value) || 0;
-                      const pcs = editingPacket.pieces && editingPacket.pieces > 0 ? editingPacket.pieces : 1;
                       const pRate = editingPacket.purchase_rate_per_unit || 0;
                       const sRate = editingPacket.sale_rate_per_unit || 0;
-                      setEditingPacket({
-                        ...editingPacket,
-                        weight: wt,
-                        stone_weight: Math.round((wt / pcs) * 1000) / 1000,
-                        purchase_price: Math.round(pRate * wt),
-                        sale_price: Math.round(sRate * wt),
-                      });
+                      if (editingPacket.is_uncountable) {
+                        setEditingPacket({
+                          ...editingPacket,
+                          weight: wt,
+                          pieces: 0,
+                          stone_weight: 0,
+                          purchase_price: Math.round(pRate * wt),
+                          sale_price: Math.round(sRate * wt),
+                        });
+                      } else {
+                        setEditingPacket({
+                          ...editingPacket,
+                          weight: wt,
+                          stone_weight: 0,
+                          purchase_price: Math.round(pRate * wt),
+                          sale_price: Math.round(sRate * wt),
+                        });
+                      }
                     }}
                   />
                 </div>
@@ -2617,85 +3349,75 @@ export default function Inventory() {
                   </select>
                 </div>
 
-                <div>
-                  <label className="label">Pieces:</label>
-                  <input
-                    type="number"
-                    min={1}
-                    className="input"
-                    value={editingPacket.pieces || 1}
-                    onChange={(e) => {
-                      const pcs = Number(e.target.value) || 1;
-                      const sWt = editingPacket.stone_weight && editingPacket.stone_weight > 0
-                        ? editingPacket.stone_weight
-                        : (editingPacket.weight ? editingPacket.weight / pcs : 1);
-                      const newTotalWeight = Math.round(pcs * sWt * 100) / 100;
-                      const pRate = editingPacket.purchase_rate_per_unit || 0;
-                      const sRate = editingPacket.sale_rate_per_unit || 0;
-                      setEditingPacket({
-                        ...editingPacket,
-                        pieces: pcs,
-                        weight: newTotalWeight,
-                        purchase_price: Math.round(pRate * newTotalWeight),
-                        sale_price: Math.round(sRate * newTotalWeight),
-                      });
-                    }}
-                  />
-                </div>
+                {!editingPacket.is_uncountable && (
+                  <div>
+                    <label className="label">Pieces:</label>
+                    <input
+                      type="number"
+                      name="pieces"
+                      min={0}
+                      className="input pieces-input"
+                      value={editingPacket.pieces ?? 0}
+                      onChange={(e) => {
+                        const pcs = Math.max(0, Number(e.target.value) || 0);
+                        setEditingPacket({
+                          ...editingPacket,
+                          pieces: pcs,
+                        });
+                      }}
+                    />
+                  </div>
+                )}
 
                 <div>
-                  <label className="label" title="Weight per individual stone to group calibrated sizes">
-                    Weight/Stone:
-                  </label>
-                  <input
-                    type="number"
-                    step="0.001"
-                    className="input"
-                    placeholder="e.g. 0.25"
-                    value={editingPacket.stone_weight ?? ""}
-                    onChange={(e) => {
-                      const sw = parseFloat(e.target.value) || 0;
-                      const pcs = editingPacket.pieces && editingPacket.pieces > 0 ? editingPacket.pieces : 1;
-                      const newTotalWeight = Math.round(pcs * sw * 100) / 100;
-                      const pRate = editingPacket.purchase_rate_per_unit || 0;
-                      const sRate = editingPacket.sale_rate_per_unit || 0;
-                      setEditingPacket({
-                        ...editingPacket,
-                        stone_weight: sw,
-                        weight: newTotalWeight,
-                        purchase_price: Math.round(pRate * newTotalWeight),
-                        sale_price: Math.round(sRate * newTotalWeight),
-                      });
-                    }}
-                  />
-                </div>
-
-                <div>
-                  <label className="label">MM Size:</label>
+                  <label className="label">{editingPacket.is_uncountable ? "Sieve / MM Size:" : "MM Size:"}</label>
                   <input
                     type="text"
                     className="input"
-                    placeholder="e.g. 11.2 x 8.4 mm"
+                    placeholder={editingPacket.is_uncountable ? "e.g. -2 sieve / 1.1mm melee" : "e.g. 11.2 x 8.4 mm"}
                     value={editingPacket.mm_size || ""}
                     onChange={(e) => setEditingPacket({ ...editingPacket, mm_size: e.target.value })}
                   />
                 </div>
               </div>
 
-              {/* Stone Configuration: Individual & Multiple Stones Manager with Full Customization */}
-              <div
-                style={{
-                  background: "var(--surface-sunken)",
-                  padding: "12px 14px",
-                  borderRadius: 8,
-                  border: "1.5px solid var(--border)",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 10,
-                }}
-              >
-                {/* Mode Selector & Summary */}
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+              {/* Stone Configuration: Individual & Multiple Stones Manager OR Bulk Batch Notice */}
+              {editingPacket.is_uncountable ? (
+                <div
+                  style={{
+                    background: "rgba(59, 130, 246, 0.06)",
+                    padding: "16px 18px",
+                    borderRadius: 8,
+                    border: "1.5px dashed rgba(59, 130, 246, 0.4)",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 14,
+                  }}
+                >
+                  <span style={{ fontSize: 32 }}>📦</span>
+                  <div>
+                    <div style={{ fontSize: 13.5, fontWeight: 800, color: "#2563eb" }}>
+                      Bulk Batch / Parcel (Carat Weight Only — No Pieces Count)
+                    </div>
+                    <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 3, lineHeight: 1.5 }}>
+                      This packet contains an uncounted mass of stones (e.g., 2,000+ melee stones or rough parcel). Total inventory, valuations, and commercial sales are managed purely by weight (<strong>{editingPacket.weight || 0} {editingPacket.unit || "cts"}</strong>) with zero piece count involvement.
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div
+                  style={{
+                    background: "var(--surface-sunken)",
+                    padding: "12px 14px",
+                    borderRadius: 8,
+                    border: "1.5px solid var(--border)",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 10,
+                  }}
+                >
+                  {/* Mode Selector & Summary */}
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                     <span style={{ fontSize: 12, fontWeight: 800, color: "var(--primary)" }}>
                       💎 Stone Configuration:
@@ -2746,14 +3468,13 @@ export default function Inventory() {
                           onClick={() => {
                             const pcs = Math.max(2, editingPacket.pieces || 2);
                             const cur = getEditingStoneDetails();
-                            const avg = Number(((editingPacket.weight || 0) / pcs).toFixed(3));
                             const next = [...cur];
                             while (next.length < pcs) {
                               next.push({
                                 id: `st-${next.length + 1}-${Math.random().toString(36).slice(2, 6)}`,
                                 variety: editingPacket.particulars || "",
                                 shape: editingPacket.shape || "Oval",
-                                weight: avg,
+                                weight: 0,
                                 mm_size: editingPacket.mm_size || "",
                               });
                             }
@@ -2809,13 +3530,8 @@ export default function Inventory() {
                   </div>
 
                   <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--on-surface-2)" }}>
-                    Total: <strong style={{ color: "var(--on-surface)" }}>{editingPacket.pieces || 1} pcs</strong> •{" "}
+                    Total: <strong style={{ color: "var(--on-surface)" }}>{editingPacket.is_uncountable ? "Bulk (Uncountable)" : `${editingPacket.pieces !== undefined ? editingPacket.pieces : 1} pcs`}</strong> •{" "}
                     <strong style={{ color: "var(--primary)" }}>{editingPacket.weight || 0} {editingPacket.unit || "cts"}</strong>
-                    {(editingPacket.pieces || 1) > 1 && editingPacket.weight ? (
-                      <span style={{ color: "var(--muted)" }}>
-                        {" "}(avg {((editingPacket.weight || 0) / (editingPacket.pieces || 1)).toFixed(2)} ct/pc)
-                      </span>
-                    ) : null}
                   </div>
                 </div>
 
@@ -2838,7 +3554,7 @@ export default function Inventory() {
                         ⚖️ No individual stone weight added (Default)
                       </div>
                       <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 3 }}>
-                        Total weight ({editingPacket.weight || 0} {editingPacket.unit || "cts"}) is tracked collectively across {editingPacket.pieces || 1} piece(s). Click below if you wish to record individual weights per stone.
+                        Total weight ({editingPacket.weight || 0} {editingPacket.unit || "cts"}) is tracked collectively across {editingPacket.is_uncountable ? "uncountable bulk parcel" : `${editingPacket.pieces !== undefined ? editingPacket.pieces : 1} piece(s)`}. Click below if you wish to record individual weights per stone.
                       </div>
                     </div>
 
@@ -2847,19 +3563,18 @@ export default function Inventory() {
                       className="btn btn-primary btn-xs"
                       style={{ fontWeight: 700, padding: "5px 12px" }}
                       onClick={() => {
-                        const pcs = Math.max(1, editingPacket.pieces || 1);
-                        const avg = Number(((editingPacket.weight || 0) / pcs).toFixed(3));
+                        const pcs = Math.max(1, Number(editingPacket.pieces) || 1);
                         const initialDetails = Array.from({ length: pcs }).map((_, i) => ({
                           id: `st-${i + 1}-${Math.random().toString(36).slice(2, 6)}`,
                           variety: editingPacket.particulars || "",
                           shape: editingPacket.shape || "Oval",
-                          weight: avg,
+                          weight: 0,
                           mm_size: editingPacket.mm_size || "",
                         }));
                         updateEditingStones(initialDetails);
                       }}
                     >
-                      + Add Individual Stone Weights ({editingPacket.pieces || 1} pcs)
+                      + Add Individual Stone Weights ({editingPacket.pieces !== undefined ? editingPacket.pieces : 1} pcs)
                     </button>
                   </div>
                 ) : (
@@ -2873,7 +3588,7 @@ export default function Inventory() {
                       className="btn btn-primary btn-xs"
                       onClick={() => {
                         const cur = getEditingStoneDetails();
-                        const defaultWt = editingPacket.stone_weight && editingPacket.stone_weight > 0 ? editingPacket.stone_weight : 0;
+                        const defaultWt = 0;
                         cur.push({
                           id: `st-${cur.length + 1}-${Math.random().toString(36).slice(2, 6)}`,
                           variety: editingPacket.particulars || "",
@@ -2895,7 +3610,7 @@ export default function Inventory() {
                         onClick={() => {
                           const count = Math.max(1, batchAddCount || 1);
                           const cur = getEditingStoneDetails();
-                          const defaultWt = editingPacket.stone_weight && editingPacket.stone_weight > 0 ? editingPacket.stone_weight : 0;
+                          const defaultWt = 0;
                           for (let i = 0; i < count; i++) {
                             cur.push({
                               id: `st-${cur.length + 1}-${Math.random().toString(36).slice(2, 6)}`,
@@ -3028,11 +3743,8 @@ export default function Inventory() {
                 </div>
 
                 <datalist id="stone-variety-list">
-                  {DEFAULT_VARIETIES.map((v) => (
-                    <option key={v} value={v} />
-                  ))}
-                  {customParticulars.map((cp, i) => (
-                    <option key={`cp-${i}`} value={cp} />
+                  {allParticulars.map((v, i) => (
+                    <option key={`var-${i}`} value={v} />
                   ))}
                 </datalist>
 
@@ -3233,6 +3945,7 @@ export default function Inventory() {
               </>
             )}
           </div>
+        )}
 
               {/* Purchase Valuation (Password Protected: default 2014) */}
               <div
@@ -3263,8 +3976,52 @@ export default function Inventory() {
                 </div>
 
                 {!costPriceUnlocked ? (
-                  <div style={{ fontSize: 12, color: "var(--muted)", padding: "6px 0" }}>
-                    🔒 Purchase cost price is password-protected. (Default: 2014). Only asking price is displayed to users.
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "6px 0" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+                      <div style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600 }}>
+                        🔒 Cost price is protected behind Master PIN.
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <label className="label" style={{ fontSize: 11, margin: 0, fontWeight: 700 }}>
+                          Purchase Date:
+                        </label>
+                        <input
+                          type="date"
+                          className="input"
+                          style={{ padding: "4px 8px", fontSize: 12, width: "auto" }}
+                          value={editingPacket.purchase_date || ""}
+                          onChange={(e) => setEditingPacket({ ...editingPacket, purchase_date: e.target.value })}
+                        />
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, background: "var(--surface)", padding: "8px 12px", borderRadius: 6, border: "1px solid var(--border)" }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: "var(--on-surface)" }}>Unlock to Enter Cost:</span>
+                      <input
+                        type="password"
+                        placeholder="Enter PIN"
+                        className="input"
+                        style={{ width: 110, padding: "4px 8px", fontSize: 12 }}
+                        value={passwordInput}
+                        onChange={(e) => setPasswordInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            verifyPasswordMutation.mutate(passwordInput.trim());
+                          }
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-xs"
+                        style={{ fontWeight: 800, padding: "4px 10px" }}
+                        onClick={() => verifyPasswordMutation.mutate(passwordInput.trim())}
+                      >
+                        🔓 Unlock
+                      </button>
+                      {passwordError && (
+                        <span style={{ color: "#ef4444", fontSize: 11.5, fontWeight: 700 }}>{passwordError}</span>
+                      )}
+                    </div>
                   </div>
                 ) : (
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
@@ -3564,13 +4321,13 @@ export default function Inventory() {
                     fontWeight: 800,
                     textTransform: "uppercase",
                     background:
-                      packetDetailsModalItem.status === "in_stock"
+                      (packetDetailsModalItem.status === "in_stock" || (modalDerivedStock.pieces > 0 && modalDerivedStock.weight > 0))
                         ? "rgba(16, 185, 129, 0.15)"
                         : "rgba(245, 158, 11, 0.15)",
-                    color: packetDetailsModalItem.status === "in_stock" ? "#10b981" : "#f59e0b",
+                    color: (packetDetailsModalItem.status === "in_stock" || (modalDerivedStock.pieces > 0 && modalDerivedStock.weight > 0)) ? "#10b981" : "#f59e0b",
                   }}
                 >
-                  {packetDetailsModalItem.status.replace("_", " ")}
+                  {(modalDerivedStock.pieces > 0 && modalDerivedStock.weight > 0) ? "in stock" : packetDetailsModalItem.status.replace("_", " ")}
                 </span>
               </div>
 
@@ -3587,10 +4344,23 @@ export default function Inventory() {
                 }}
               >
                 <div>
-                  <div style={{ fontSize: 11.5, color: "var(--on-surface-2)", fontWeight: 700 }}>Weight & Pieces</div>
+                  <div style={{ fontSize: 11.5, color: "var(--on-surface-2)", fontWeight: 700 }}>Weight & Classification</div>
                   <div style={{ fontSize: 15, fontWeight: 800 }}>
-                    {packetDetailsModalItem.weight} {packetDetailsModalItem.unit || "cts"} ({packetDetailsModalItem.pieces} pcs)
+                    {modalDerivedStock.weight} {packetDetailsModalItem.unit || "cts"}{" "}
+                    {packetDetailsModalItem.is_uncountable ? (
+                      <span style={{ fontSize: 12, fontWeight: 700, color: "#2563eb" }}>(📦 Bulk Parcel — Weight Only)</span>
+                    ) : packetDetailsModalItem.stone_category === "no_individual_weight" || (!hasGenuineIndividualWeights(packetDetailsModalItem) && (packetDetailsModalItem.pieces || 0) > 1) ? (
+                      <span style={{ fontSize: 12, fontWeight: 700, color: "#d97706" }}>({modalDerivedStock.pieces} pcs • ⚖️ No Indiv Wt)</span>
+                    ) : (
+                      <span style={{ fontSize: 12, fontWeight: 700, color: "#059669" }}>({modalDerivedStock.pieces} pcs • 💎 Indiv Wt Added)</span>
+                    )}
                   </div>
+                  {packetDetailsModalItem.initial_weight && packetDetailsModalItem.initial_weight > modalDerivedStock.weight ? (
+                    <div style={{ fontSize: 11, color: "#ef4444", fontWeight: 700, marginTop: 3 }}>
+                      ↓ -{Number((packetDetailsModalItem.initial_weight - modalDerivedStock.weight).toFixed(2))} {packetDetailsModalItem.unit || "cts"} sold / deducted
+                      <span style={{ color: "var(--muted)", fontWeight: 500 }}> (Initial Intake: {packetDetailsModalItem.initial_weight} {packetDetailsModalItem.unit || "cts"})</span>
+                    </div>
+                  ) : null}
                 </div>
 
                 <div>
@@ -3615,9 +4385,69 @@ export default function Inventory() {
                   </div>
                 </div>
 
-                {((packetDetailsModalItem.stone_details && packetDetailsModalItem.stone_details.length > 0) ||
+                <div>
+                  <div style={{ fontSize: 11.5, color: "var(--on-surface-2)", fontWeight: 700 }}>Purchase Date</div>
+                  <div style={{ fontSize: 13, fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
+                    {editingPurchaseDateId === packetDetailsModalItem.id ? (
+                      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                        <input
+                          type="date"
+                          className="input"
+                          style={{ padding: "2px 6px", fontSize: 12, height: 26 }}
+                          value={tempPurchaseDate}
+                          onChange={(e) => setTempPurchaseDate(e.target.value)}
+                        />
+                        <button
+                          type="button"
+                          className="btn btn-primary btn-xs"
+                          onClick={() => {
+                            savePacketMutation.mutate({
+                              ...packetDetailsModalItem,
+                              purchase_date: tempPurchaseDate,
+                            });
+                            setPacketDetailsModalItem({
+                              ...packetDetailsModalItem,
+                              purchase_date: tempPurchaseDate,
+                            });
+                            setEditingPurchaseDateId(null);
+                          }}
+                        >
+                          Save
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-xs"
+                          onClick={() => setEditingPurchaseDateId(null)}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <span>{packetDetailsModalItem.purchase_date || "Not specified"}</span>
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-xs"
+                          style={{ fontSize: 11, padding: "1px 4px", color: "var(--primary)" }}
+                          title="Change purchase date"
+                          onClick={() => {
+                            setTempPurchaseDate(packetDetailsModalItem.purchase_date || "");
+                            setEditingPurchaseDateId(packetDetailsModalItem.id);
+                          }}
+                        >
+                          ✏️ Change
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {hasGenuineIndividualWeights(packetDetailsModalItem) &&
+                  ((packetDetailsModalItem.stone_details && packetDetailsModalItem.stone_details.length > 0) ||
                   (packetDetailsModalItem.stone_weights && packetDetailsModalItem.stone_weights.length > 0) ||
-                  modalStoneStatuses.length > 0) && (
+                  (packetDetailsModalItem.sub_gems && packetDetailsModalItem.sub_gems.length > 0)) &&
+                  modalStoneStatuses.length > 0 &&
+                  modalStoneStatuses.some((s) => Number(s.weight) > 0) && (
                   <div style={{ gridColumn: "1 / -1", borderTop: "1px dashed var(--border)", paddingTop: 10 }}>
                     <div style={{ fontSize: 12, color: "var(--primary)", fontWeight: 800, marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
                       <span>
@@ -3633,15 +4463,20 @@ export default function Inventory() {
                         ):
                       </span>
                       <span style={{ fontSize: 11, color: "var(--muted)" }}>
-                        Current Vault Stock: <strong>{packetDetailsModalItem.weight} {packetDetailsModalItem.unit || "cts"}</strong> ({packetDetailsModalItem.pieces} pcs)
+                        Current Vault Stock: <strong>{modalDerivedStock.weight} {packetDetailsModalItem.unit || "cts"}</strong> ({packetDetailsModalItem.is_uncountable ? "Uncountable" : `${modalDerivedStock.pieces} pcs`})
                       </span>
                     </div>
 
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 8, maxHeight: 220, overflowY: "auto", padding: "2px" }}>
                       {modalStoneStatuses.map((st, i) => {
                         const isInStock = st.status === "in_stock";
-                        const isApproval = st.status === "on_approval";
-                        const isSold = st.status === "sold";
+                        const isApproval = st.status === "on_approval" || Boolean(st.saleRef?.is_approval && st.saleRef?.approval_status !== "approved_billed");
+                        const isSold = st.status === "sold" && !isApproval;
+                        const displayWeight = st.weight > 0
+                          ? st.weight
+                          : (st.saleRef?.weight && st.saleRef.weight > 0
+                              ? st.saleRef.weight
+                              : 0);
                         return (
                           <div
                             key={st.id || i}
@@ -3669,7 +4504,7 @@ export default function Inventory() {
                                 #{st.stoneNumber} {st.variety}
                               </span>
                               <span style={{ fontWeight: 800, fontSize: 12, color: "var(--on-surface)" }}>
-                                {Number(st.weight || 0).toFixed(2)} ct
+                                {Number(displayWeight).toFixed(2)} ct
                               </span>
                             </div>
 
@@ -3727,11 +4562,11 @@ export default function Inventory() {
                     )}
                   </div>
                   <div style={{ fontSize: 16, fontWeight: 900, color: "var(--on-surface)" }}>
-                    {costPriceUnlocked ? formatINR(packetDetailsModalItem.purchase_price) : "🔒 ••••••"}
+                    {costPriceUnlocked ? formatINR(modalDerivedStock.purchase_price) : "🔒 ••••••"}
                   </div>
                   <div style={{ fontSize: 11.5, color: "var(--on-surface-2)", fontWeight: 600 }}>
                     {costPriceUnlocked
-                      ? `₹${Math.round(packetDetailsModalItem.purchase_rate_per_unit || 0)} / ${packetDetailsModalItem.unit || "ct"}`
+                      ? `₹${Math.round(packetDetailsModalItem.purchase_rate_per_unit || (modalDerivedStock.weight ? modalDerivedStock.purchase_price / modalDerivedStock.weight : 0))} / ${packetDetailsModalItem.unit || "ct"}`
                       : "Password protected"}
                   </div>
                 </div>
@@ -3739,10 +4574,10 @@ export default function Inventory() {
                 <div style={{ padding: 12, background: "rgba(16, 185, 129, 0.08)", borderRadius: 8, border: "1px solid rgba(16, 185, 129, 0.3)" }}>
                   <div style={{ fontSize: 11, color: "#10b981", fontWeight: 800, textTransform: "uppercase" }}>Asking Valuation</div>
                   <div style={{ fontSize: 16, fontWeight: 900, color: "#10b981" }}>
-                    {formatINR(packetDetailsModalItem.sale_price)}
+                    {formatINR(modalDerivedStock.sale_price)}
                   </div>
                   <div style={{ fontSize: 11.5, color: "var(--on-surface-2)", fontWeight: 600 }}>
-                    ₹{Math.round(packetDetailsModalItem.sale_rate_per_unit || 0)} / ${packetDetailsModalItem.unit || "ct"}
+                    ₹{Math.round(packetDetailsModalItem.sale_rate_per_unit || (modalDerivedStock.weight ? modalDerivedStock.sale_price / modalDerivedStock.weight : 0))} / {packetDetailsModalItem.unit || "ct"}
                   </div>
                 </div>
               </div>
@@ -3783,7 +4618,7 @@ export default function Inventory() {
 
                 {matchingSalesHistory.length === 0 ? (
                   <div style={{ padding: "14px 12px", textAlign: "center", color: "var(--muted)", fontSize: 12, background: "var(--surface-sunken)", borderRadius: 6 }}>
-                    No stones sold from this packet yet. Full balance ({packetDetailsModalItem.pieces} pcs / {packetDetailsModalItem.weight} {packetDetailsModalItem.unit || "cts"}) is available in vault stock.
+                    No stones sold from this packet yet. Full balance ({modalDerivedStock.pieces} pcs / {modalDerivedStock.weight} {packetDetailsModalItem.unit || "cts"}) is available in vault stock.
                   </div>
                 ) : (
                   <div style={{ overflowX: "auto", maxHeight: 200, overflowY: "auto" }}>
@@ -3854,17 +4689,33 @@ export default function Inventory() {
               </div>
 
               {/* Actions Footer */}
-              <div className="modal-footer" style={{ marginTop: 6, display: "flex", justifyContent: "space-between" }}>
-                <button
-                  type="button"
-                  className="btn btn-outline btn-sm"
-                  onClick={() => {
-                    setMovePacketItem(packetDetailsModalItem);
-                    setTargetMoveBoxName(packetDetailsModalItem.box_name || "");
-                  }}
-                >
-                  📦 Move to Another Box
-                </button>
+              <div className="modal-footer" style={{ marginTop: 6, display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button
+                    type="button"
+                    className="btn btn-outline btn-sm"
+                    onClick={() => {
+                      setMovePacketItem(packetDetailsModalItem);
+                      setTargetMoveBoxName(packetDetailsModalItem.box_name || "");
+                    }}
+                  >
+                    📦 Move to Another Box
+                  </button>
+
+                  <button
+                    type="button"
+                    className="btn btn-outline btn-sm"
+                    style={{ color: "#3b82f6", borderColor: "#3b82f6", fontWeight: 700 }}
+                    onClick={() => {
+                      const item = packetDetailsModalItem;
+                      setPacketDetailsModalItem(null);
+                      navigate(`/sales/new?is_memo=true&packet=${encodeURIComponent(item.packet_number)}`);
+                    }}
+                    title="Issue this gemstone packet on an approval memo voucher to a client"
+                  >
+                    📋 Issue to Memo
+                  </button>
+                </div>
 
                 <div style={{ display: "flex", gap: 8 }}>
                   <button
@@ -4069,7 +4920,7 @@ export default function Inventory() {
             >
               <div className="modal-body" style={{ gap: 14 }}>
                 <p style={{ margin: 0, fontSize: 13, color: "var(--muted)", lineHeight: 1.45 }}>
-                  Enter the cost price password to reveal purchase rates, acquisition totals, and margins. (Default password: <strong>2014</strong>).
+                  Enter Master Security PIN to reveal confidential cost prices, purchase rates, and margins.
                 </p>
 
                 <div>
@@ -4151,7 +5002,7 @@ export default function Inventory() {
                     required
                     className="input"
                     style={{ fontSize: 15 }}
-                    placeholder="Enter new password (e.g. 2014)"
+                    placeholder="Enter new PIN"
                     value={newPasswordInput}
                     onChange={(e) => setNewPasswordInput(e.target.value)}
                   />

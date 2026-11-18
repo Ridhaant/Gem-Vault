@@ -6,7 +6,7 @@ HOW TO TRANSFER AND RUN SHREEJI GEMS ON ANY WINDOWS COMPUTER:
 ---------------------------------------------------------------------
 
 STEP 1: COPY TO PENDRIVE
-- Copy this entire folder ("work-main" or "gemstones") onto your USB pendrive.
+- Copy this entire folder ("Shreeji_Gems_Client_Delivery") onto your USB pendrive.
 
 STEP 2: RUN ON TARGET PC
 - Plug the pendrive into any Windows laptop or computer (no internet required).

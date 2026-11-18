@@ -1,0 +1,75 @@
+========================================================================================
+💎 SHREEJI GEMS — GEMSTONES CRM & PACKET INVENTORY MASTER
+========================================================================================
+Version: 1.0.0 Production Release (100% Offline & Portable)
+Delivery Date: October 2026
+
+----------------------------------------------------------------------------------------
+🚀 QUICK START (HOW TO RUN ON ANY WINDOWS LAPTOP OR PC):
+----------------------------------------------------------------------------------------
+
+STEP 1: CREATE DESKTOP SHORTCUT (WITH LOGO ICON)
+-------------------------------------------------
+Inside this folder, simply double-click:
+    👉 Create_Desktop_Shortcut.bat
+
+This will automatically create a shiny emerald gemstone icon named:
+    "Shreeji Gems - Gemstones CRM"
+directly onto your Windows Desktop!
+
+
+STEP 2: LAUNCH THE SOFTWARE
+----------------------------
+Double-click your new desktop shortcut (or double-click "Launch_GemVault.bat").
+
+Shreeji Gems will launch immediately in a dedicated, borderless native application window.
+No browser tabs, no command prompts, and NO INTERNET REQUIRED!
+
+
+----------------------------------------------------------------------------------------
+🔒 100% OFFLINE DATA PRIVACY & BACKUPS:
+----------------------------------------------------------------------------------------
+1. AIR-GAPPED SECURITY:
+   All your gemstone inventory, purchase costs, valuations, sales invoices, client
+   ledgers, and brokerage deals are stored 100% locally on your computer. Nothing is ever
+   uploaded to external servers or third parties.
+
+2. AUTOMATIC WEEKLY BACKUPS:
+   Shreeji Gems automatically generates a safe database snapshot every 7 days.
+
+3. MANUAL 1-CLICK BACKUPS ("💾 Backup Now"):
+   Click the "Backup Now" button in the top navigation bar anytime to export and download
+   a timestamped .json database backup file to your computer or USB drive.
+
+4. ONE-CLICK RESTORE ("🔄 Restore"):
+   If you ever switch computers or want to roll back, click "Restore" at the top to load
+   any saved backup snapshot instantly.
+
+5. EXECUTIVE BUSINESS VALUATION & P&L REPORT ("📊 Business Report"):
+   Click "Business Report" at the top to preview and print a comprehensive breakdown
+   of your vault valuation, total cost vs asking price, and itemized gemstone inventory.
+
+
+----------------------------------------------------------------------------------------
+🏷️ QR CODE TAGS & PHYSICAL BARCODE SCANNER INTEGRATION:
+----------------------------------------------------------------------------------------
+1. PACKET QR LABELS:
+   Every intake gemstone lot/packet generates printable QR codes with complete stone
+   specifications (Variety, Shape, Carat Weight, Pieces, MM Size, Lab Certificate, etc.).
+
+2. PHYSICAL SCANNER GUN READY:
+   Plug any handheld USB or wireless barcode/QR scanner gun into your computer.
+   Whenever you scan a physical packet tag, Shreeji Gems instantly detects the scan
+   and automatically pops open that packet's complete dossier on screen!
+
+
+----------------------------------------------------------------------------------------
+📁 HOW TO TRANSFER TO ANOTHER COMPUTER / USB DRIVE:
+----------------------------------------------------------------------------------------
+You can copy this entire folder ("Shreeji_Gems_Client_Delivery") onto any USB pendrive
+and paste it onto any other Windows laptop or PC.
+Run "Create_Desktop_Shortcut.bat" on the new PC, and you are ready to work!
+
+========================================================================================
+CONFIDENTIAL & PROPRIETARY — SHREEJI GEMS GEMSTONES MASTER CRM
+========================================================================================

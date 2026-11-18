@@ -8,19 +8,17 @@ import { Spinner } from "./ui";
 import Layout from "./Layout";
 import Login from "./pages/Login";
 import Inventory from "./pages/Inventory";
-
-// Lazy-loaded routes for code-splitting & ultra-fast initial load
-const Purchases = lazy(() => import("./pages/Purchases"));
-const PurchaseForm = lazy(() => import("./pages/PurchaseForm"));
-const Sales = lazy(() => import("./pages/Sales"));
-const SaleForm = lazy(() => import("./pages/SaleForm"));
-const SaleDetail = lazy(() => import("./pages/SaleDetail"));
-const Brokerage = lazy(() => import("./pages/Brokerage"));
-const Expenses = lazy(() => import("./pages/Expenses"));
-const Assets = lazy(() => import("./pages/Assets"));
-const Reports = lazy(() => import("./pages/Reports"));
-const Buyers = lazy(() => import("./pages/Buyers"));
-const PacketView = lazy(() => import("./pages/PacketView"));
+import Purchases from "./pages/Purchases";
+import PurchaseForm from "./pages/PurchaseForm";
+import Sales from "./pages/Sales";
+import SaleForm from "./pages/SaleForm";
+import SaleDetail from "./pages/SaleDetail";
+import Brokerage from "./pages/Brokerage";
+import Expenses from "./pages/Expenses";
+import Assets from "./pages/Assets";
+import Reports from "./pages/Reports";
+import Buyers from "./pages/Buyers";
+import PacketView from "./pages/PacketView";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -172,6 +170,14 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
 }
 
 export default function App() {
+  React.useEffect(() => {
+    const handleHydrated = () => {
+      queryClient.invalidateQueries();
+    };
+    window.addEventListener("gemvault_storage_hydrated", handleHydrated);
+    return () => window.removeEventListener("gemvault_storage_hydrated", handleHydrated);
+  }, []);
+
   return (
     <ErrorBoundary>
       <QueryClientProvider client={queryClient}>

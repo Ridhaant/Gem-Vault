@@ -244,15 +244,18 @@ export function printBuyerApprovalStatement(
     const rowsHtml = group.sales.flatMap((sale) => {
       totalMemos++;
       return (sale.items || []).map((it) => {
-        const pcs = it.pieces || 1;
+        const isBulk = Boolean(it.is_uncountable || (it.pieces === 0));
+        const pcs = isBulk ? 0 : (it.pieces !== undefined ? it.pieces : 0);
         const wt = it.weight || 0;
         const val = it.total_price || 0;
 
-        groupPcs += pcs;
+        if (!isBulk) {
+          groupPcs += pcs;
+          totalStonesPieces += pcs;
+        }
         groupWeight += wt;
         groupVal += val;
 
-        totalStonesPieces += pcs;
         totalStonesWeight += wt;
         totalMemoValue += val;
 
@@ -263,7 +266,7 @@ export function printBuyerApprovalStatement(
             <td><strong>${it.packet_number}</strong></td>
             <td>${it.particulars || "Gemstone"}</td>
             <td>${it.shape || "—"}</td>
-            <td class="num">${pcs}</td>
+            <td class="num">${isBulk ? "—" : pcs}</td>
             <td class="num">${wt.toFixed(2)} ${it.unit || "cts"}</td>
             <td class="num">${formatINR(it.rate_per_unit || (wt ? Math.round(val / wt) : 0))}</td>
             <td class="num"><strong>${formatINR(val)}</strong></td>
@@ -678,9 +681,10 @@ export function printPurchaseRegister(purchases: GemPurchase[], filterLabel?: st
 export function printPurchaseVoucher(purchase: GemPurchase) {
   const items = purchase.items || [];
   const totalWeight = items.reduce((sum, it) => sum + (it.weight || 0), 0);
-  const totalPieces = items.reduce((sum, it) => sum + (it.pieces || 1), 0);
+  const totalPieces = items.reduce((sum, it) => sum + (it.is_uncountable ? 0 : (it.pieces || 0)), 0);
 
   const itemsHtml = items.map((it, idx) => {
+    const isBulk = Boolean(it.is_uncountable || (it.pieces === 0));
     return `
       <tr>
         <td>${idx + 1}</td>
@@ -688,8 +692,7 @@ export function printPurchaseVoucher(purchase: GemPurchase) {
         <td>${it.box_name || "Vault"}</td>
         <td><strong>${it.particulars}</strong></td>
         <td>${it.shape || "—"}</td>
-        <td class="num">${it.pieces || 1}</td>
-        <td class="num">${it.stone_weight ? `${it.stone_weight.toFixed(2)} ct/pc` : "—"}</td>
+        <td class="num">${isBulk ? "—" : (it.pieces || 0)}</td>
         <td class="num"><strong>${it.weight.toFixed(2)} ${it.unit || "cts"}</strong></td>
         <td class="num">${formatINR(it.purchase_rate_per_unit || (it.weight ? Math.round(it.cost_price / it.weight) : 0))}</td>
         <td class="num"><strong>${formatINR(it.cost_price)}</strong></td>
@@ -760,7 +763,6 @@ export function printPurchaseVoucher(purchase: GemPurchase) {
               <th>Particulars</th>
               <th>Shape</th>
               <th class="num">Pieces</th>
-              <th class="num">Weight / Pc</th>
               <th class="num">Total Weight</th>
               <th class="num">Cost Rate / ct</th>
               <th class="num">Total Cost Price</th>
@@ -771,8 +773,7 @@ export function printPurchaseVoucher(purchase: GemPurchase) {
             ${itemsHtml}
             <tr class="subtotal-row">
               <td colspan="5" style="text-align: right;">Total Intake:</td>
-              <td class="num">${totalPieces} pcs</td>
-              <td></td>
+              <td class="num">${totalPieces > 0 ? `${totalPieces} pcs` : "—"}</td>
               <td class="num">${totalWeight.toFixed(2)} cts</td>
               <td></td>
               <td class="num" style="color: #0f4c5c;">${formatINR(purchase.total_cost)}</td>
@@ -982,8 +983,10 @@ export function printBuyerWiseLedgerReport(
   }
 
   let grandTotalPcs = 0;
+  let grandTotalPcsTaken = 0;
   let grandTotalWeight = 0;
   let grandTotalRet = 0;
+  let grandTotalRetPcs = 0;
   let grandTotalTaken = 0;
   let grandTotalRs = 0;
 
@@ -994,8 +997,10 @@ export function printBuyerWiseLedgerReport(
       .sort((a, b) => (a.date || "").localeCompare(b.date || ""));
 
     let bPcs = 0;
+    let bPcsTaken = 0;
     let bWeight = 0;
     let bRet = 0;
+    let bRetPcs = 0;
     let bTaken = 0;
     let bRs = 0;
     const rowsHtml: string[] = [];
@@ -1003,47 +1008,121 @@ export function printBuyerWiseLedgerReport(
 
     curSales.forEach((sale) => {
       const saleDateStr = fmtDate(sale.date);
+      const isPendingApproval = Boolean(sale.is_approval) && (!sale.approval_status || sale.approval_status === "pending");
 
-      const ledgerItems: GemSaleItem[] = [...(sale.items || []), ...(sale.returned_items || [])];
+      // De-duplicate: Include all items from sale.items, plus any standalone returns from sale.returned_items
+      // that are not already recorded as partial returns inside sale.items.
+      // NEVER filter out returned stones based purely on packet_number or packet_id, because a single packet
+      // can have dozens or hundreds of individual stones allocated across multiple items.
+      const standaloneReturns = (sale.returned_items || []).filter((retIt) => {
+        // 1. If exact stone_id is already present in sale.items
+        if (retIt.stone_id && (sale.items || []).some((it) => it.stone_id === retIt.stone_id)) {
+          return false;
+        }
+        // 2. If an item in sale.items has the same packet number and particulars and already has partial return weight recorded matching this return
+        const isDuplicatePartial = (sale.items || []).some((it) => {
+          const samePkt = (it.packet_number || "").trim().toLowerCase() === (retIt.packet_number || "").trim().toLowerCase();
+          const samePart = (it.particulars || "").trim().toLowerCase() === (retIt.particulars || "").trim().toLowerCase();
+          const hasRetRecorded = (it.weight_returned || 0) > 0;
+          const matchRetWt = Math.abs((it.weight_returned || 0) - (retIt.weight_returned || retIt.weight || 0)) <= 0.01;
+          return samePkt && samePart && hasRetRecorded && matchRetWt;
+        });
+        return !isDuplicatePartial;
+      });
+      const ledgerItems: GemSaleItem[] = [...(sale.items || []), ...standaloneReturns];
 
       ledgerItems.forEach((it, itIdx) => {
         const isRet = Boolean(it.is_returned || (sale.approval_status === "returned" && !it.weight_taken));
-        const pcs = it.pieces_taken !== undefined 
-          ? (isRet ? (it.original_pieces || it.pieces_returned || it.pieces || 1) : it.pieces_taken)
-          : (it.pieces || 1);
-        const originalWt = it.original_weight !== undefined 
-          ? it.original_weight 
-          : ((it.weight_taken || 0) + (it.weight_returned || 0) || it.weight || 0);
-        const wtRet = it.weight_returned !== undefined 
-          ? it.weight_returned 
-          : (isRet ? originalWt : 0);
-        const wtTaken = it.weight_taken !== undefined 
-          ? it.weight_taken 
-          : (isRet ? 0 : (originalWt - wtRet > 0 ? Number((originalWt - wtRet).toFixed(2)) : originalWt));
-        const rate = it.rate_per_unit || (originalWt > 0 ? Math.round((it.total_price || 0) / originalWt) : 0);
-        const rs = isRet ? 0 : (it.total_price || Math.round(wtTaken * rate));
 
-        bPcs += pcs;
+        let pcs = 0;
+        let pcsTaken = 0;
+        let pcsRet = 0;
+        let originalWt = 0;
+        let wtRet = 0;
+        let wtTaken = 0;
+        let rate = 0;
+        let rs = 0;
+
+        if (isPendingApproval) {
+          // Item is currently out on inspection / memo (not yet purchased or returned)
+          originalWt = it.original_weight || it.weight || 0;
+          pcs = it.original_pieces !== undefined ? it.original_pieces : (it.pieces !== undefined ? it.pieces : 0);
+          pcsTaken = 0;
+          pcsRet = 0;
+          wtRet = 0;
+          wtTaken = 0;
+          rate = it.rate_per_unit || (originalWt > 0 ? Math.round((it.total_price || 0) / originalWt) : 0);
+          rs = 0;
+        } else if (isRet) {
+          // Stone was returned back to stock (standalone return)
+          pcs = it.pieces_returned !== undefined ? it.pieces_returned : (it.original_pieces !== undefined ? it.original_pieces : (it.pieces !== undefined ? it.pieces : 0));
+          pcsTaken = 0;
+          pcsRet = pcs;
+          originalWt = it.original_weight !== undefined ? it.original_weight : (it.weight_returned || it.weight || 0);
+          wtRet = it.weight_returned !== undefined ? it.weight_returned : (it.weight || originalWt);
+          wtTaken = 0;
+          rate = it.rate_per_unit || (originalWt > 0 ? Math.round((it.total_price || 0) / originalWt) : 0);
+          rs = 0;
+        } else {
+          // Stone was confirmed taken as sale or direct sale (can have partial return recorded on the same item)
+          pcs = it.original_pieces !== undefined ? it.original_pieces : (it.pieces !== undefined ? it.pieces : 0);
+          pcsTaken = it.pieces_taken !== undefined ? it.pieces_taken : (it.pieces !== undefined ? it.pieces : 0);
+          pcsRet = it.pieces_returned !== undefined ? it.pieces_returned : (wtRet > 0 ? Math.max(0, pcs - pcsTaken) : 0);
+          originalWt = it.original_weight !== undefined
+            ? it.original_weight
+            : ((it.weight_taken || 0) + (it.weight_returned || 0) || it.weight || 0);
+          wtRet = it.weight_returned !== undefined ? it.weight_returned : 0;
+          wtTaken = it.weight_taken !== undefined ? it.weight_taken : (it.weight || 0);
+          rate = it.rate_per_unit || (wtTaken > 0 ? Math.round((it.total_price || 0) / wtTaken) : (originalWt > 0 ? Math.round((it.total_price || 0) / originalWt) : 0));
+          rs = it.total_price !== undefined ? it.total_price : Math.round(wtTaken * rate);
+        }
+
+        const isBulk = Boolean(it.is_uncountable || pcs === 0);
+        if (!isBulk) {
+          bPcs += pcs;
+          if (!isPendingApproval && !isRet) {
+            bPcsTaken += pcsTaken;
+          }
+          if (!isPendingApproval) {
+            bRetPcs += pcsRet;
+          }
+        }
         bWeight += originalWt;
         bRet += wtRet;
         bTaken += wtTaken;
         bRs += rs;
 
         const dateDisplay = itIdx === 0 ? saleDateStr : "";
-        const noDisplay = it.slip_no !== undefined ? it.slip_no : (itIdx + 1);
-        const retBadge = wtRet > 0 || isRet ? `<span style="color: #c026d3; font-weight: 800;">RET</span>` : "";
+        const noDisplay = it.slip_no !== undefined ? it.slip_no : lineCounter;
+        const particularText = isPendingApproval
+          ? `${it.particulars || "Gemstone"} <span style="color: #d97706; font-size: 10px; font-weight: 700;">[MEMO #${sale.invoice_no}]</span>`
+          : (isRet ? `${it.particulars || "Gemstone"} <span style="color: #c026d3; font-size: 10px; font-weight: 700;">[RET]</span>` : (it.particulars || "Gemstone"));
+
+        const takenDisplay = isPendingApproval
+          ? `<span style="color: #d97706; font-size: 10px; font-weight: 700;">MEMO</span>`
+          : (wtTaken > 0 ? wtTaken.toFixed(2) : "0.00");
+
+        const takenPcsDisplay = isPendingApproval
+          ? `<span style="color: #d97706; font-size: 10px; font-weight: 700;">MEMO</span>`
+          : (isRet ? "0" : (isBulk ? "—" : pcsTaken));
+
+        const retPcsDisplay = isPendingApproval
+          ? `<span style="color: #d97706; font-size: 10px; font-weight: 700;">MEMO</span>`
+          : (isBulk ? "—" : (pcsRet > 0 ? pcsRet : "0"));
 
         rowsHtml.push(`
           <tr>
             <td style="text-align: center; white-space: nowrap; font-weight: 700;">${dateDisplay}</td>
             <td style="text-align: center;">${noDisplay}</td>
-            <td style="text-align: left; font-weight: 700; text-transform: uppercase;">${it.particulars || "Gemstone"}</td>
-            <td class="num">${pcs}</td>
+            <td style="text-align: left; font-weight: 700; text-transform: uppercase;">${particularText}</td>
+            <td class="num">${isBulk ? "—" : pcs}</td>
+            <td class="num font-bold" style="color: #059669;">${takenPcsDisplay}</td>
             <td class="num">${originalWt > 0 ? originalWt.toFixed(2) : "—"}</td>
-            <td class="num">${wtRet > 0 ? wtRet.toFixed(2) : "0"}</td>
-            <td class="num font-bold">${wtTaken > 0 ? wtTaken.toFixed(2) : (wtRet > 0 ? "0" : originalWt.toFixed(2))}</td>
+            <td class="num">${wtRet > 0 ? wtRet.toFixed(2) : "0.00"}</td>
+            <td class="num" style="color: ${pcsRet > 0 ? '#c026d3' : 'inherit'}; font-weight: ${pcsRet > 0 ? '800' : 'normal'};">${retPcsDisplay}</td>
+            <td class="num font-bold">${takenDisplay}</td>
             <td class="num">${rate > 0 ? rate : "—"}</td>
-            <td class="num font-bold">${rs > 0 ? rs : "0"}</td>
+            <td class="num font-bold">${rs > 0 ? rs.toLocaleString("en-IN") : "0"}</td>
             <td style="text-align: center; font-weight: 700; text-transform: uppercase;">${it.packet_number || "—"}</td>
           </tr>
         `);
@@ -1052,8 +1131,10 @@ export function printBuyerWiseLedgerReport(
     });
 
     grandTotalPcs += bPcs;
+    grandTotalPcsTaken += bPcsTaken;
     grandTotalWeight += bWeight;
     grandTotalRet += bRet;
+    grandTotalRetPcs += bRetPcs;
     grandTotalTaken += bTaken;
     grandTotalRs += bRs;
 
@@ -1065,25 +1146,29 @@ export function printBuyerWiseLedgerReport(
         <table class="report-table">
           <thead>
             <tr>
-              <th style="width: 85px;">DATE</th>
-              <th style="width: 35px;">NO</th>
+              <th style="width: 80px;">DATE</th>
+              <th style="width: 32px;">NO</th>
               <th>PARTICULARS</th>
-              <th style="width: 45px;">PCS</th>
-              <th style="width: 60px;">WEIGHT</th>
-              <th style="width: 50px;">RET</th>
-              <th style="width: 60px;">TAKEN</th>
-              <th style="width: 65px;">RATE</th>
+              <th style="width: 42px;">PCS</th>
+              <th style="width: 55px;">PCS TAKEN</th>
+              <th style="width: 58px;">WEIGHT</th>
+              <th style="width: 48px;">RET</th>
+              <th style="width: 50px;">RET PCS</th>
+              <th style="width: 58px;">TAKEN (CTS)</th>
+              <th style="width: 60px;">RATE</th>
               <th style="width: 75px;">RS</th>
-              <th style="width: 85px;">PKT</th>
+              <th style="width: 80px;">PKT</th>
             </tr>
           </thead>
           <tbody>
-            ${rowsHtml.join("") || `<tr><td colspan="10" style="text-align: center; padding: 20px; color: #64748b;">No transactions recorded for ${curBuyer}.</td></tr>`}
+            ${rowsHtml.join("") || `<tr><td colspan="12" style="text-align: center; padding: 20px; color: #64748b;">No transactions recorded for ${curBuyer}.</td></tr>`}
             <tr class="total-row">
               <td colspan="3" style="text-align: right; font-weight: 900;">TOTAL:</td>
-              <td class="num">${bPcs}</td>
+              <td class="num">${bPcs > 0 ? bPcs : "—"}</td>
+              <td class="num font-bold" style="color: #059669;">${bPcsTaken > 0 ? bPcsTaken : "—"}</td>
               <td class="num">${bWeight.toFixed(2)}</td>
               <td class="num">${bRet.toFixed(2)}</td>
+              <td class="num font-bold" style="color: #c026d3;">${bRetPcs > 0 ? bRetPcs : "—"}</td>
               <td class="num">${bTaken.toFixed(2)}</td>
               <td></td>
               <td class="num" style="font-size: 13px; font-weight: 900;">${bRs.toLocaleString("en-IN")}</td>

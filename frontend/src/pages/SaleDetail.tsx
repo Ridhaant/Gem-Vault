@@ -39,6 +39,30 @@ export default function SaleDetail() {
     onError: (err: any) => show("Payment recording failed: " + err.message, "error"),
   });
 
+  const convertSaleMutation = useMutation({
+    mutationFn: (opts?: { notes?: string }) =>
+      apiPost(`/sales/${id}/convert-to-approval`, { options: opts }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["sale", id] });
+      queryClient.invalidateQueries({ queryKey: ["sales"] });
+      queryClient.invalidateQueries({ queryKey: ["packets"] });
+      queryClient.invalidateQueries({ queryKey: ["boxes"] });
+      queryClient.invalidateQueries({ queryKey: ["analytics_overview"] });
+      show("Commercial sale converted to active approval memo! Gemstone items restored to 'on_approval' status.", "success");
+    },
+    onError: (err: any) => show("Conversion failed: " + err.message, "error"),
+  });
+
+  const handleConvertToApproval = () => {
+    if (
+      window.confirm(
+        `Convert invoice ${sale?.invoice_no} (${sale?.buyer_name}) into an active approval memo?\n\nThis will update this transaction to an approval voucher and restore associated gemstone packets back to 'on_approval' status for ${sale?.buyer_name}.`
+      )
+    ) {
+      convertSaleMutation.mutate({});
+    }
+  };
+
   if (isLoading) return <div className="page-body"><Spinner /></div>;
   if (isError || !sale) {
     return (
@@ -95,7 +119,23 @@ export default function SaleDetail() {
           ← Back to Sales
         </button>
 
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {(!sale.is_approval || sale.approval_status === "approved_billed") && (
+            <button
+              className="btn btn-outline btn-sm"
+              style={{
+                color: "#2563eb",
+                borderColor: "#3b82f6",
+                background: "rgba(59, 130, 246, 0.06)",
+                fontWeight: 700,
+              }}
+              onClick={handleConvertToApproval}
+              disabled={convertSaleMutation.isPending}
+              title="Convert this commercial sale to an active approval memo"
+            >
+              {convertSaleMutation.isPending ? "Converting..." : "📋 Convert to Approval Memo"}
+            </button>
+          )}
           {sale.balance > 0 && (
             <button
               className="btn btn-outline btn-sm"
@@ -118,6 +158,40 @@ export default function SaleDetail() {
           </button>
         </div>
       </div>
+
+      {/* Active Approval Memo Banner */}
+      {sale.is_approval && sale.approval_status === "pending" && (
+        <div
+          className="hide-print"
+          style={{
+            padding: "12px 18px",
+            background: "#eff6ff",
+            border: "1.5px solid #93c5fd",
+            borderRadius: 8,
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: 10,
+          }}
+        >
+          <div>
+            <div style={{ fontSize: 13.5, fontWeight: 800, color: "#1d4ed8" }}>
+              📋 Active Approval Memo (Goods On Inspection)
+            </div>
+            <div style={{ fontSize: 11.5, color: "#475569", marginTop: 2 }}>
+              These gemstone items are currently out on inspection with <strong>{sale.buyer_name}</strong>.
+            </div>
+          </div>
+          <button
+            className="btn btn-primary btn-sm"
+            style={{ background: "#2563eb", borderColor: "#2563eb", fontWeight: 700 }}
+            onClick={() => navigate("/sales")}
+          >
+            Manage &amp; Settle in Approvals ➜
+          </button>
+        </div>
+      )}
 
       {/* Luxury Printable Invoice Sheet */}
       <div

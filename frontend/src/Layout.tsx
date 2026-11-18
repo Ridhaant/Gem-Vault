@@ -10,6 +10,8 @@ import {
   printBusinessEvaluationReport,
 } from "./backupEngine";
 import { verifyAnalyticsPassword } from "./gemstoneStorage";
+import { apiPost, setCostToken } from "./api";
+import { Gemstone3D } from "./Gemstone3D";
 
 const TOP_NAV = [
   { to: "/inventory", icon: "📦", label: "Boxes & Packets", end: true },
@@ -42,11 +44,11 @@ export default function Layout() {
   const { show } = useToast();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showBackupModal, setShowBackupModal] = useState(false);
-  const [backupModalTab, setBackupModalTab] = useState<"backup" | "report" | "restore" | "archive">("backup");
+  const [backupModalTab, setBackupModalTab] = useState<"backup" | "restore" | "archive">("backup");
   const [showGstModal, setShowGstModal] = useState(false);
 
   // Master Security PIN Protection (Password: 2014)
-  const [securityPinAction, setSecurityPinAction] = useState<"backup" | "report" | "restore" | null>(null);
+  const [securityPinAction, setSecurityPinAction] = useState<"backup" | "restore" | null>(null);
   const [securityPinInput, setSecurityPinInput] = useState<string>("");
   const [securityPinError, setSecurityPinError] = useState<boolean>(false);
 
@@ -73,19 +75,31 @@ export default function Layout() {
 
   const runQuickBackup = () => {
     try {
+      const isBackend = typeof window !== "undefined" && (window.location.port === "8000" || window.location.hostname === "127.0.0.1");
+      if (isBackend) {
+        const docLink = document.createElement("a");
+        docLink.href = "/api/backup/download-doc";
+        docLink.download = `gemvault_master_backup_${new Date().toISOString().slice(0, 10)}.doc`;
+        document.body.appendChild(docLink);
+        docLink.click();
+        document.body.removeChild(docLink);
+
+        setTimeout(() => {
+          const jsonLink = document.createElement("a");
+          jsonLink.href = "/api/backup/download-json";
+          jsonLink.download = `gemvault_master_backup_${new Date().toISOString().slice(0, 10)}.json`;
+          document.body.appendChild(jsonLink);
+          jsonLink.click();
+          document.body.removeChild(jsonLink);
+        }, 300);
+
+        show("💾 Dual Backup downloaded (Word .doc & Master JSON) successfully!", "success");
+        return;
+      }
       const res = createAndDownloadBackupNow(false);
       show(`💾 Dual Backup downloaded (Word .doc & JSON .json) successfully!`, "success");
     } catch (err: any) {
       show("Failed to create backup: " + err.message, "error");
-    }
-  };
-
-  const runQuickReport = () => {
-    try {
-      printBusinessEvaluationReport();
-      show("📊 Opening Business Evaluation Report for printing...", "info");
-    } catch (err: any) {
-      show("Failed to generate report: " + err.message, "error");
     }
   };
 
@@ -104,16 +118,6 @@ export default function Layout() {
     }
   };
 
-  const handleQuickReport = () => {
-    if (isMasterUnlocked()) {
-      runQuickReport();
-    } else {
-      setSecurityPinAction("report");
-      setSecurityPinInput("");
-      setSecurityPinError(false);
-    }
-  };
-
   const handleOpenRestore = () => {
     if (isMasterUnlocked()) {
       runRestore();
@@ -124,8 +128,26 @@ export default function Layout() {
     }
   };
 
-  const handlePinSubmit = (e: React.FormEvent) => {
+  const handlePinSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    try {
+      const res = await apiPost("/cost-price-password/verify", { password: securityPinInput });
+      if (res?.valid) {
+        if (res?.token) {
+          setCostToken(res.token);
+        }
+        sessionStorage.setItem("gemvault_master_admin_unlocked", "true");
+        setSecurityPinError(false);
+        const action = securityPinAction;
+        setSecurityPinAction(null);
+        setSecurityPinInput("");
+        show("✓ Master PIN verified.", "success");
+        if (action === "backup") runQuickBackup();
+        else if (action === "restore") runRestore();
+        return;
+      }
+    } catch {}
+
     if (verifyAnalyticsPassword(securityPinInput)) {
       sessionStorage.setItem("gemvault_master_admin_unlocked", "true");
       setSecurityPinError(false);
@@ -134,7 +156,6 @@ export default function Layout() {
       setSecurityPinInput("");
       show("✓ Master PIN verified.", "success");
       if (action === "backup") runQuickBackup();
-      else if (action === "report") runQuickReport();
       else if (action === "restore") runRestore();
     } else {
       setSecurityPinError(true);
@@ -153,9 +174,13 @@ export default function Layout() {
             background: "linear-gradient(135deg, #10b981 0%, #047857 100%)",
             color: "#fff",
             fontWeight: 900,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 2,
           }}
         >
-          💎
+          <Gemstone3D size={32} theme="emerald" interactive={false} autoRotateSpeed={0.018} />
         </div>
         <div style={{ flex: 1 }}>
           <div className="sidebar-logo-text" style={{ letterSpacing: "0.5px" }}>
@@ -256,7 +281,7 @@ export default function Layout() {
           </button>
 
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{ fontSize: 18 }}>💎</span>
+            <Gemstone3D size={24} theme="emerald" interactive={false} autoRotateSpeed={0.015} />
             <span style={{ fontWeight: 800, fontSize: 15, letterSpacing: 0.5 }}>
               SHREEJI GEMS CRM
             </span>
@@ -288,17 +313,6 @@ export default function Layout() {
             >
               <span>💾</span>
               <span className="hide-mobile">Backup Now</span>
-            </button>
-
-            {/* Generate & Print Business Report */}
-            <button
-              className="btn btn-outline btn-sm"
-              style={{ display: "flex", alignItems: "center", gap: 6 }}
-              onClick={handleQuickReport}
-              title="Generate and print comprehensive business evaluation report"
-            >
-              <span>📊</span>
-              <span className="hide-mobile">Business Report</span>
             </button>
 
             {/* Restore Backup */}
@@ -406,16 +420,12 @@ export default function Layout() {
               <h3 style={{ fontSize: 17, fontWeight: 900, margin: "0 0 6px" }}>
                 {securityPinAction === "backup"
                   ? "Master Backup Download Protected"
-                  : securityPinAction === "report"
-                  ? "Business Evaluation Report Protected"
                   : "Database Restore Protected"}
               </h3>
               <p style={{ fontSize: 13, color: "var(--muted)", margin: "0 0 18px", lineHeight: 1.5 }}>
                 Enter the 4-digit Master Security PIN to authorize{" "}
                 {securityPinAction === "backup"
                   ? "dual Word & JSON database backup download"
-                  : securityPinAction === "report"
-                  ? "generating and viewing company business report"
                   : "restoring database from backup file"}
                 .
               </p>
